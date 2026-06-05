@@ -6,6 +6,7 @@
 struct JapaneseDictionaryMatch {
   String key;
   String term;
+  String terms;
   String reading;
   String definition;
   String sourceText;
@@ -14,6 +15,7 @@ struct JapaneseDictionaryMatch {
   uint8_t tier = 0;
   uint8_t flags = 0;
   uint8_t deinflectionDepth = 0;
+  uint8_t termCount = 0;
 };
 
 class JapaneseDictionary {

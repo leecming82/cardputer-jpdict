@@ -24,9 +24,9 @@ constexpr size_t kMaxResults = 6;
 constexpr size_t kMaxKanjiCandidates = 64;
 constexpr size_t kVisibleKanjiCandidates = 24;
 constexpr size_t kKanjiGridColumns = 6;
-constexpr uint32_t kMarqueeFrameMs = 180;
-constexpr uint32_t kMarqueePauseMs = 1200;
-constexpr uint32_t kMarqueeMsPerPixel = 70;
+constexpr uint32_t kMarqueeFrameMs = 240;
+constexpr uint32_t kMarqueePauseMs = 1500;
+constexpr uint32_t kMarqueeMsPerPixel = 95;
 constexpr uint32_t kIdleDelayMs = 10;
 constexpr uint32_t kBacklightDimAfterMs = 60000;
 constexpr uint8_t kBacklightNormal = 128;
@@ -67,6 +67,7 @@ int marqueeHeight = 0;
 String marqueeText;
 uint16_t marqueeColor = TFT_WHITE;
 uint16_t marqueeBackground = TFT_BLACK;
+bool marqueeLargeText = false;
 String storageDetail;
 String dictionaryBasePath;
 String kanjiIndexStatus = "not checked";
@@ -297,7 +298,7 @@ void drawMarqueeFrame() {
     return;
   }
 
-  display.setFont(&fonts::efontJA_12);
+  display.setFont(marqueeLargeText ? &fonts::efontJA_16 : &fonts::efontJA_12);
   display.fillRect(marqueeX, marqueeY, marqueeWidth, marqueeHeight,
                    marqueeBackground);
   display.setTextDatum(top_left);
@@ -310,15 +311,16 @@ void drawMarqueeFrame() {
 }
 
 void drawMarqueeText(int x, int y, int width, int height, const String& text,
-                     uint16_t color, uint16_t background) {
+                     uint16_t color, uint16_t background,
+                     bool largeText = false, bool allowMarquee = true) {
   auto& display = M5Cardputer.Display;
-  display.setFont(&fonts::efontJA_12);
+  display.setFont(largeText ? &fonts::efontJA_16 : &fonts::efontJA_12);
   display.fillRect(x, y, width, height, background);
   display.setTextDatum(top_left);
   display.setTextColor(color, background);
 
-  if (textWidth(text) <= width) {
-    display.drawString(text, x, y);
+  if (!allowMarquee || textWidth(text) <= width) {
+    display.drawString(ellipsize(text, width), x, y);
     return;
   }
 
@@ -330,7 +332,42 @@ void drawMarqueeText(int x, int y, int width, int height, const String& text,
   marqueeText = text;
   marqueeColor = color;
   marqueeBackground = background;
+  marqueeLargeText = largeText;
   drawMarqueeFrame();
+}
+
+void drawMetadataLine(int x, int y, int width, const String& readingLabel,
+                      const String& tagText, bool allowMarquee) {
+  auto& display = M5Cardputer.Display;
+  display.setFont(&fonts::efontJA_12);
+  display.fillRect(x, y, width, 15, TFT_BLACK);
+  display.setTextDatum(top_left);
+  display.setTextColor(TFT_CYAN, TFT_BLACK);
+
+  if (tagText.length() == 0) {
+    display.drawString(ellipsize(readingLabel, width), x, y);
+    return;
+  }
+
+  constexpr int gap = 5;
+  constexpr int minTagWidth = 44;
+  int readingWidth = textWidth(readingLabel);
+  const int maxReadingWidth = width - gap - minTagWidth;
+  if (maxReadingWidth > 0 && readingWidth > maxReadingWidth) {
+    const String visibleReading = ellipsize(readingLabel, maxReadingWidth);
+    display.drawString(visibleReading, x, y);
+    readingWidth = textWidth(visibleReading);
+  } else {
+    display.drawString(readingLabel, x, y);
+  }
+
+  const int tagX = x + readingWidth + gap;
+  const int tagWidth = width - readingWidth - gap;
+  if (tagWidth <= 0) {
+    return;
+  }
+  drawMarqueeText(tagX, y, tagWidth, 15, tagText, TFT_CYAN, TFT_BLACK, false,
+                  allowMarquee);
 }
 
 int readBatteryLevelFromAdc() {
@@ -1112,10 +1149,8 @@ void drawResults() {
   const JapaneseDictionaryMatch &result = results[selectedResult];
   const ParsedDefinition definition = parseDefinition(result.definition);
   display.setTextDatum(top_left);
-  display.setFont(&fonts::efontJA_16);
-  display.setTextColor(TFT_GREEN, TFT_BLACK);
-  display.drawString(ellipsize(result.term, display.width() - pad * 2), pad,
-                     top);
+  drawMarqueeText(pad, top, display.width() - pad * 2, 20, result.terms,
+                  TFT_GREEN, TFT_BLACK, true);
   display.setFont(&fonts::efontJA_12);
 
   String reading = String("[") + result.reading + "]";
@@ -1123,15 +1158,21 @@ void drawResults() {
     reading += " < ";
     reading += result.sourceText;
   }
-  display.setTextColor(TFT_CYAN, TFT_BLACK);
-  String metadata = reading;
+  String metadata;
+  if (result.termCount > 1) {
+    metadata += result.termCount;
+    metadata += " forms";
+  }
   if (definition.attributes.length() > 0) {
+    if (metadata.length() > 0) {
+      metadata += " ";
+    }
     metadata += " (";
     metadata += definition.attributes;
     metadata += ")";
   }
-  drawMarqueeText(pad, top + 21, display.width() - pad * 2, 15, metadata,
-                  TFT_CYAN, TFT_BLACK);
+  drawMetadataLine(pad, top + 21, display.width() - pad * 2, reading, metadata,
+                   !marqueeActive);
 
   int dividerY = top + 36;
   display.setTextColor(TFT_DARKGREY, TFT_BLACK);
@@ -1161,19 +1202,25 @@ void drawDefinition() {
   const JapaneseDictionaryMatch &result = results[selectedResult];
   const ParsedDefinition definition = parseDefinition(result.definition);
   display.setTextDatum(top_left);
-  display.setFont(&fonts::efontJA_16);
-  display.setTextColor(TFT_GREEN, TFT_BLACK);
-  display.drawString(ellipsize(result.term, display.width() - pad * 2), pad,
-                     top);
+  drawMarqueeText(pad, top, display.width() - pad * 2, 20, result.terms,
+                  TFT_GREEN, TFT_BLACK, true);
   display.setFont(&fonts::efontJA_12);
-  String metadata = String("[") + result.reading + "]";
+  String reading = String("[") + result.reading + "]";
+  String metadata;
+  if (result.termCount > 1) {
+    metadata += result.termCount;
+    metadata += " forms";
+  }
   if (definition.attributes.length() > 0) {
+    if (metadata.length() > 0) {
+      metadata += " ";
+    }
     metadata += " (";
     metadata += definition.attributes;
     metadata += ")";
   }
-  drawMarqueeText(pad, top + 21, display.width() - pad * 2, 15, metadata,
-                  TFT_CYAN, TFT_BLACK);
+  drawMetadataLine(pad, top + 21, display.width() - pad * 2, reading, metadata,
+                   !marqueeActive);
   int dividerY = top + 36;
   display.setTextColor(TFT_DARKGREY, TFT_BLACK);
   display.drawFastHLine(pad, dividerY, display.width() - pad * 2,

@@ -199,6 +199,7 @@ void JapaneseDictionary::populateMatch(const Record& record,
                                        JapaneseDictionaryMatch& match) {
   match.key = record.key;
   match.term = readString(record.termOffset, record.termLen);
+  match.terms = match.term;
   match.reading = readString(record.readingOffset, record.readingLen);
   match.definition = readString(record.definitionOffset, record.definitionLen);
   match.sourceText = sourceText;
@@ -207,16 +208,54 @@ void JapaneseDictionary::populateMatch(const Record& record,
   match.tier = record.tier;
   match.flags = record.flags;
   match.deinflectionDepth = deinflectionDepth;
+  match.termCount = 1;
 }
 
 namespace {
 
-bool alreadyMatched(const JapaneseDictionaryMatch* matches, size_t count,
-                    const JapaneseDictionaryMatch& candidate) {
+int32_t sequenceGroupId(int32_t sequence) {
+  return sequence < 0 ? -sequence : sequence;
+}
+
+bool hasTermVariant(const String& terms, const String& term) {
+  int start = 0;
+  while (start <= static_cast<int>(terms.length())) {
+    int end = terms.indexOf("・", start);
+    if (end < 0) {
+      end = terms.length();
+    }
+    if (terms.substring(start, end) == term) {
+      return true;
+    }
+    if (end >= static_cast<int>(terms.length())) {
+      break;
+    }
+    start = end + strlen("・");
+  }
+  return false;
+}
+
+void appendTermVariant(JapaneseDictionaryMatch& match, const String& term) {
+  if (term.length() == 0 || hasTermVariant(match.terms, term)) {
+    return;
+  }
+  if (match.terms.length() > 0) {
+    match.terms += "・";
+  }
+  match.terms += term;
+  if (match.termCount < UINT8_MAX) {
+    ++match.termCount;
+  }
+}
+
+bool mergeMatched(JapaneseDictionaryMatch* matches, size_t count,
+                  const JapaneseDictionaryMatch& candidate) {
+  const int32_t candidateGroup = sequenceGroupId(candidate.sequence);
   for (size_t i = 0; i < count; ++i) {
-    if (matches[i].term == candidate.term &&
+    if (sequenceGroupId(matches[i].sequence) == candidateGroup &&
         matches[i].reading == candidate.reading &&
         matches[i].definition == candidate.definition) {
+      appendTermVariant(matches[i], candidate.term);
       return true;
     }
   }
@@ -250,7 +289,7 @@ size_t JapaneseDictionary::appendExactMatches(
 
     JapaneseDictionaryMatch candidate;
     populateMatch(record, sourceText, deinflectionDepth, candidate);
-    if (!alreadyMatched(outMatches, found, candidate)) {
+    if (!mergeMatched(outMatches, found, candidate)) {
       outMatches[found++] = candidate;
     }
   }
@@ -315,7 +354,7 @@ size_t JapaneseDictionary::lookupExactThenPrefix(const String& key,
     }
     JapaneseDictionaryMatch candidate;
     populateMatch(record, record.key, 0, candidate);
-    if (alreadyMatched(outMatches, found, candidate)) {
+    if (mergeMatched(outMatches, found, candidate)) {
       continue;
     }
     outMatches[found++] = candidate;
