@@ -370,6 +370,53 @@ void drawMetadataLine(int x, int y, int width, const String& readingLabel,
                   allowMarquee);
 }
 
+String headwordTail(const JapaneseDictionaryMatch& result) {
+  if (result.terms.length() <= result.term.length() ||
+      !result.terms.startsWith(result.term)) {
+    return "";
+  }
+  String tail = result.terms.substring(result.term.length());
+  if (tail.startsWith("・")) {
+    tail = tail.substring(strlen("・"));
+  }
+  return tail;
+}
+
+void drawHeadwordLine(int x, int y, int width,
+                      const JapaneseDictionaryMatch& result) {
+  auto& display = M5Cardputer.Display;
+  display.setFont(&fonts::efontJA_16);
+  display.fillRect(x, y, width, 20, TFT_BLACK);
+  display.setTextDatum(top_left);
+  display.setTextColor(TFT_GREEN, TFT_BLACK);
+
+  const String tail = headwordTail(result);
+  if (tail.length() == 0) {
+    display.drawString(ellipsize(result.term, width), x, y);
+    return;
+  }
+
+  constexpr int gap = 4;
+  constexpr int minTailWidth = 48;
+  const String separator = "・";
+  const int primaryWidth = textWidth(result.term);
+  const int separatorWidth = textWidth(separator);
+  const int fixedWidth = primaryWidth + gap + separatorWidth + gap;
+  if (fixedWidth > width - minTailWidth) {
+    display.drawString(ellipsize(result.term, width), x, y);
+    return;
+  }
+
+  display.drawString(result.term, x, y);
+  display.drawString(separator, x + primaryWidth + gap, y);
+  const int tailX = x + fixedWidth;
+  const int tailWidth = width - fixedWidth;
+  if (tailWidth <= 0) {
+    return;
+  }
+  drawMarqueeText(tailX, y, tailWidth, 20, tail, TFT_GREEN, TFT_BLACK, true);
+}
+
 int readBatteryLevelFromAdc() {
   static bool adcInitialized = false;
   if (!adcInitialized) {
@@ -1161,8 +1208,7 @@ void drawResults() {
   const JapaneseDictionaryMatch &result = results[selectedResult];
   const ParsedDefinition definition = parseDefinition(result.definition);
   display.setTextDatum(top_left);
-  drawMarqueeText(pad, top, display.width() - pad * 2, 20, result.terms,
-                  TFT_GREEN, TFT_BLACK, true);
+  drawHeadwordLine(pad, top, display.width() - pad * 2, result);
   display.setFont(&fonts::efontJA_12);
 
   String reading = String("[") + result.reading + "]";
@@ -1214,8 +1260,7 @@ void drawDefinition() {
   const JapaneseDictionaryMatch &result = results[selectedResult];
   const ParsedDefinition definition = parseDefinition(result.definition);
   display.setTextDatum(top_left);
-  drawMarqueeText(pad, top, display.width() - pad * 2, 20, result.terms,
-                  TFT_GREEN, TFT_BLACK, true);
+  drawHeadwordLine(pad, top, display.width() - pad * 2, result);
   display.setFont(&fonts::efontJA_12);
   String reading = String("[") + result.reading + "]";
   String metadata;
