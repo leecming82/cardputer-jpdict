@@ -207,16 +207,32 @@ void addNegativeCandidates(std::vector<std::string>& out,
 
 void addIAdjectiveCandidates(std::vector<std::string>& out,
                              const std::string& word) {
-  addSuffixCandidate(out, word, "く", "い");
-  addSuffixCandidate(out, word, "くて", "い");
-  addSuffixCandidate(out, word, "かった", "い");
-  addSuffixCandidate(out, word, "かったです", "い");
-  addSuffixCandidate(out, word, "くない", "い");
-  addSuffixCandidate(out, word, "くないです", "い");
-  addSuffixCandidate(out, word, "くなかった", "い");
-  addSuffixCandidate(out, word, "くなかったです", "い");
-  addSuffixCandidate(out, word, "くありません", "い");
-  addSuffixCandidate(out, word, "くありませんでした", "い");
+  struct Rule {
+    const char* suffix;
+    const char* replacement;
+  };
+  static constexpr Rule rules[] = {
+      {"く", "い"},
+      {"くて", "い"},
+      {"かった", "い"},
+      {"かったです", "い"},
+      {"くない", "い"},
+      {"くないです", "い"},
+      {"くなかった", "い"},
+      {"くなかったです", "い"},
+      {"くありません", "い"},
+      {"くありませんでした", "い"},
+  };
+  for (const auto& rule : rules) {
+    if (!endsWith(word, rule.suffix)) {
+      continue;
+    }
+    const std::string stem = word.substr(0, word.size() - std::strlen(rule.suffix));
+    if (stem == "い") {
+      continue;
+    }
+    addUnique(out, stem + rule.replacement);
+  }
 }
 
 void addInflectionStep(std::vector<std::string>& out, const std::string& word) {
