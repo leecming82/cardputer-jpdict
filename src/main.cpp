@@ -44,6 +44,7 @@ size_t selectedResult = 0;
 size_t resultCount = 0;
 JapaneseDictionary dictionary;
 JapaneseDictionaryMatch results[kMaxResults];
+String resultPreviewLines[kMaxResults];
 KanjiIndex kanjiIndex;
 String kanjiCandidates[kMaxKanjiCandidates];
 size_t selectedKanjiCandidate = 0;
@@ -99,6 +100,7 @@ constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
 
 String currentInputText();
+void drawFooter();
 
 bool usesLargeSearchHeader() {
   return viewMode == ViewMode::Results && !searched &&
@@ -895,6 +897,96 @@ ParsedDefinition parseDefinition(const String& rawDefinition) {
   return parsed;
 }
 
+String compactResultLine(const JapaneseDictionaryMatch& result) {
+  String line = result.term;
+  if (result.termCount > 1) {
+    line += " +";
+    line += static_cast<int>(result.termCount - 1);
+  }
+  line += " [";
+  line += result.reading;
+  line += "] ";
+  line += parseDefinition(result.definition).glosses;
+  return line;
+}
+
+constexpr int kResultRowHeight = 20;
+
+void rebuildResultPreviewLines() {
+  auto& display = M5Cardputer.Display;
+  constexpr int pad = 5;
+  display.setFont(&fonts::efontJA_16);
+  for (size_t i = 0; i < resultCount; ++i) {
+    resultPreviewLines[i] =
+        ellipsize(compactResultLine(results[i]), display.width() - pad * 2);
+  }
+  for (size_t i = resultCount; i < kMaxResults; ++i) {
+    resultPreviewLines[i] = "";
+  }
+}
+
+size_t resultListVisibleRows() {
+  const int top = contentTop();
+  const int height = kFooterTop - top;
+  return height > 0 ? height / kResultRowHeight : 0;
+}
+
+size_t firstVisibleResultFor(size_t selected) {
+  const size_t visibleRows = resultListVisibleRows();
+  if (visibleRows > 0 && selected >= visibleRows) {
+    return selected - visibleRows + 1;
+  }
+  return 0;
+}
+
+void drawResultListRow(size_t resultIndex, size_t firstRow) {
+  if (resultIndex >= resultCount || resultIndex < firstRow) {
+    return;
+  }
+
+  const size_t row = resultIndex - firstRow;
+  const size_t visibleRows = resultListVisibleRows();
+  if (row >= visibleRows) {
+    return;
+  }
+
+  auto& display = M5Cardputer.Display;
+  constexpr int pad = 5;
+  const int y = contentTop() + row * kResultRowHeight;
+  const bool selected = resultIndex == selectedResult;
+  const uint16_t background = selected ? TFT_DARKGREY : TFT_BLACK;
+  const uint16_t foreground = selected ? TFT_YELLOW : TFT_GREEN;
+  const String& line = resultPreviewLines[resultIndex];
+
+  static LGFX_Sprite rowSprite(&display);
+  if (rowSprite.getBuffer() == nullptr) {
+    rowSprite.setColorDepth(16);
+    rowSprite.createSprite(display.width(), kResultRowHeight);
+  }
+  if (rowSprite.getBuffer() != nullptr) {
+    rowSprite.setFont(&fonts::efontJA_16);
+    rowSprite.setTextDatum(top_left);
+    rowSprite.fillSprite(background);
+    rowSprite.setTextColor(foreground, background);
+    rowSprite.drawString(line, pad, 1);
+    rowSprite.pushSprite(0, y);
+    return;
+  }
+
+  display.setFont(&fonts::efontJA_16);
+  display.setTextDatum(top_left);
+  display.fillRect(0, y, display.width(), kResultRowHeight, background);
+  display.setTextColor(foreground, background);
+  display.drawString(line, pad, y + 1);
+}
+
+void redrawResultSelection(size_t oldSelected, size_t newSelected) {
+  const size_t firstRow = firstVisibleResultFor(newSelected);
+  drawResultListRow(oldSelected, firstRow);
+  drawResultListRow(newSelected, firstRow);
+  drawFooter();
+}
+
 int maxDefinitionScrollLine() {
   if (!searched || resultCount == 0 || selectedResult >= resultCount) {
     return 0;
@@ -935,6 +1027,7 @@ void runSearch() {
     resultCount =
         dictionary.lookupExactThenPrefix(lastSearchedKana, results, kMaxResults);
   }
+  rebuildResultPreviewLines();
 
   Serial.printf("search kana='%s' results=%u\n", lastSearchedKana.c_str(),
                 static_cast<unsigned>(resultCount));
@@ -970,9 +1063,15 @@ void selectPreviousResult() {
   if (resultCount == 0 || selectedResult == 0) {
     return;
   }
+  const size_t oldSelected = selectedResult;
+  const size_t oldFirstRow = firstVisibleResultFor(oldSelected);
   --selectedResult;
   definitionScrollLine = 0;
-  dirty = true;
+  if (!dirty && oldFirstRow == firstVisibleResultFor(selectedResult)) {
+    redrawResultSelection(oldSelected, selectedResult);
+  } else {
+    dirty = true;
+  }
 }
 
 void selectNextResult() {
@@ -1006,9 +1105,15 @@ void selectNextResult() {
   if (resultCount == 0 || selectedResult + 1 >= resultCount) {
     return;
   }
+  const size_t oldSelected = selectedResult;
+  const size_t oldFirstRow = firstVisibleResultFor(oldSelected);
   ++selectedResult;
   definitionScrollLine = 0;
-  dirty = true;
+  if (!dirty && oldFirstRow == firstVisibleResultFor(selectedResult)) {
+    redrawResultSelection(oldSelected, selectedResult);
+  } else {
+    dirty = true;
+  }
 }
 
 void selectUp() {
@@ -1205,42 +1310,11 @@ void drawResults() {
     return;
   }
 
-  const JapaneseDictionaryMatch &result = results[selectedResult];
-  const ParsedDefinition definition = parseDefinition(result.definition);
-  display.setTextDatum(top_left);
-  drawHeadwordLine(pad, top, display.width() - pad * 2, result);
-  display.setFont(&fonts::efontJA_12);
-
-  String reading = String("[") + result.reading + "]";
-  if (result.deinflectionDepth > 0 && result.sourceText.length() > 0) {
-    reading += " < ";
-    reading += result.sourceText;
+  const size_t visibleRows = resultListVisibleRows();
+  const size_t firstRow = firstVisibleResultFor(selectedResult);
+  for (size_t row = 0; row < visibleRows && firstRow + row < resultCount; ++row) {
+    drawResultListRow(firstRow + row, firstRow);
   }
-  String metadata;
-  if (result.termCount > 1) {
-    metadata += result.termCount;
-    metadata += " forms";
-  }
-  if (definition.attributes.length() > 0) {
-    if (metadata.length() > 0) {
-      metadata += " ";
-    }
-    metadata += " (";
-    metadata += definition.attributes;
-    metadata += ")";
-  }
-  drawMetadataLine(pad, top + 21, display.width() - pad * 2, reading, metadata,
-                   !marqueeActive);
-
-  int dividerY = top + 36;
-  display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  display.drawFastHLine(pad, dividerY, display.width() - pad * 2,
-                        TFT_DARKGREY);
-
-  const int bodyY = dividerY + 5;
-  drawWrappedText(pad, bodyY, display.width() - pad * 2,
-                  footerTop - bodyY - 2, definition.glosses, TFT_WHITE,
-                  TFT_BLACK);
 }
 
 void drawDefinition() {
@@ -1398,9 +1472,7 @@ void drawKanjiSpanPicker() {
 void drawFooter() {
   auto &display = M5Cardputer.Display;
   constexpr int footerTop = kFooterTop;
-  display.fillRect(0, footerTop, display.width(), display.height() - footerTop, TFT_DARKGREY);
-  display.setTextDatum(top_left);
-  display.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  const int footerHeight = display.height() - footerTop;
 
   String left = "Enter: Search";
   String right = "/: Kanji";
@@ -1421,6 +1493,28 @@ void drawFooter() {
   } else {
     right = "Right: Kanji";
   }
+
+  static LGFX_Sprite footerSprite(&display);
+  if (footerSprite.getBuffer() == nullptr) {
+    footerSprite.setColorDepth(16);
+    footerSprite.createSprite(display.width(), footerHeight);
+  }
+  if (footerSprite.getBuffer() != nullptr) {
+    footerSprite.setFont(&fonts::efontJA_12);
+    footerSprite.fillSprite(TFT_DARKGREY);
+    footerSprite.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    footerSprite.setTextDatum(top_left);
+    footerSprite.drawString(left, 4, 3);
+    footerSprite.setTextDatum(top_right);
+    footerSprite.drawString(right, display.width() - 4, 3);
+    footerSprite.pushSprite(0, footerTop);
+    return;
+  }
+
+  display.fillRect(0, footerTop, display.width(), footerHeight, TFT_DARKGREY);
+  display.setFont(&fonts::efontJA_12);
+  display.setTextDatum(top_left);
+  display.setTextColor(TFT_WHITE, TFT_DARKGREY);
   display.drawString(left, 4, footerTop + 3);
   display.setTextDatum(top_right);
   display.drawString(right, display.width() - 4, footerTop + 3);
