@@ -1098,7 +1098,7 @@ void drawHeader() {
   display.setTextDatum(top_left);
 
   const String inputText =
-      currentInputText().length() > 0 ? currentInputText() : String("type romaji...");
+      currentInputText().length() > 0 ? currentInputText() : String("Type: Romaji");
   const uint16_t inputColor =
       currentInputText().length() > 0 ? TFT_CYAN : TFT_LIGHTGREY;
   constexpr int batteryWidth = 42;
@@ -1131,8 +1131,8 @@ void drawResults() {
                        pad, top + 2);
     display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
     if (storageState == StorageState::DictionaryOk) {
-      display.drawString("Type romaji; kana commits live", pad, top + 18);
-      display.drawString("Enter search; right kanji", pad, top + 33);
+      display.drawString("Type: Romaji", pad, top + 18);
+      display.drawString("Enter: Search /: Kanji", pad, top + 33);
     } else {
       display.drawString(ellipsize(startupDetailLine(), display.width() - pad * 2),
                          pad, top + 18);
@@ -1320,13 +1320,13 @@ void drawKanjiSpanPicker() {
   display.setFont(&fonts::efontJA_12);
 
   display.setTextColor(TFT_CYAN, TFT_BLACK);
-  display.drawString("Kanji span", pad, top + 2);
+  display.drawString("Kanji Span", pad, top + 2);
 
   if (kanjiSourceSegment.length() == 0) {
     display.setTextColor(TFT_ORANGE, TFT_BLACK);
     display.drawString("No trailing kana", pad, top + 24);
     display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    display.drawString("Type kana before opening", pad, top + 42);
+    display.drawString("Type: Kana before opening", pad, top + 42);
     return;
   }
 
@@ -1346,8 +1346,8 @@ void drawKanjiSpanPicker() {
   display.setFont(&fonts::efontJA_12);
 
   display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  display.drawString("< widen    > shrink", pad, top + 72);
-  display.drawString("Enter candidates", pad, top + 88);
+  display.drawString("<: Widen    >: Shrink", pad, top + 72);
+  display.drawString("Enter: Candidates", pad, top + 88);
 }
 
 void drawFooter() {
@@ -1357,24 +1357,24 @@ void drawFooter() {
   display.setTextDatum(top_left);
   display.setTextColor(TFT_WHITE, TFT_DARKGREY);
 
-  String left = "Enter search";
-  String right = "/ kanji";
+  String left = "Enter: Search";
+  String right = "/: Kanji";
   if (viewMode == ViewMode::KanjiSpanPicker) {
-    left = "left/right span";
-    right = "Enter choose";
+    left = "Left/Right: Span";
+    right = "Enter: Choose";
   } else if (viewMode == ViewMode::KanjiPicker) {
     left = kanjiCandidateCount > 0 ? String(selectedKanjiCandidate + 1) + "/" +
-                                         kanjiCandidateCount + "  arrows nav"
-                                   : "Kanji picker";
-    right = "Enter insert";
+                                         kanjiCandidateCount + "  Arrows: Nav"
+                                   : "Kanji Picker";
+    right = "Enter: Insert";
   } else if (viewMode == ViewMode::Definition) {
-    left = String("Scroll ") + (definitionScrollLine + 1) + "  arrows";
-    right = "left back";
+    left = String("Arrows: Scroll ") + (definitionScrollLine + 1);
+    right = "Left: Back";
   } else if (searched && resultCount > 0) {
-    left = String(selectedResult + 1) + "/" + resultCount + "  arrows nav";
-    right = "right open";
+    left = String(selectedResult + 1) + "/" + resultCount + "  Arrows: Nav";
+    right = "Right: Open";
   } else {
-    right = "right kanji";
+    right = "Right: Kanji";
   }
   display.drawString(left, 4, footerTop + 3);
   display.setTextDatum(top_right);
