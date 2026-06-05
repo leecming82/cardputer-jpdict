@@ -1848,19 +1848,21 @@ void drawKanjiPicker() {
                              ? requestedPageEnd
                              : kanjiCandidateCount;
   int x = pad;
-  int y = top + 24;
+  int y = top + 22;
+  constexpr int cellH = 20;
+  constexpr int rowH = 21;
   for (size_t i = pageStart; i < pageEnd; ++i) {
     const bool selected = i == selectedKanjiCandidate;
     const uint16_t bg = selected ? TFT_DARKGREY : TFT_BLACK;
     const uint16_t fg = selected ? TFT_YELLOW : TFT_WHITE;
     const int cellW = (display.width() - pad * 2) / kKanjiGridColumns;
-    display.fillRect(x - 1, y - 1, cellW, 22, bg);
+    display.fillRect(x - 1, y - 1, cellW, cellH, bg);
     display.setTextColor(fg, bg);
     display.drawString(kanjiCandidates[i], x + 3, y);
     x += cellW;
     if ((i - pageStart + 1) % kKanjiGridColumns == 0) {
       x = pad;
-      y += 24;
+      y += rowH;
     }
   }
   display.setFont(&fonts::efontJA_12);
