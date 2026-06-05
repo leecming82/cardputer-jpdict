@@ -45,6 +45,11 @@ String kanjiCandidates[kMaxKanjiCandidates];
 size_t selectedKanjiCandidate = 0;
 size_t kanjiCandidateCount = 0;
 String kanjiReading;
+String kanjiSourceSegment;
+int kanjiSourceStart = 0;
+int kanjiSpanOffset = 0;
+int kanjiReplaceStart = 0;
+int kanjiReplaceLength = 0;
 bool searched = false;
 bool dirty = true;
 bool marqueeActive = false;
@@ -74,6 +79,7 @@ enum class StorageState {
 enum class ViewMode {
   Results,
   Definition,
+  KanjiSpanPicker,
   KanjiPicker,
 };
 
@@ -434,6 +440,34 @@ String trailingKanaSegment() {
   return committedKana.substring(start);
 }
 
+int previousUtf8CharStart(const String& text, int pos) {
+  if (pos <= 0) {
+    return 0;
+  }
+  int charStart = pos - 1;
+  while (charStart > 0 &&
+         (static_cast<uint8_t>(text[charStart]) & 0xC0) == 0x80) {
+    --charStart;
+  }
+  return charStart;
+}
+
+int nextUtf8CharEnd(const String& text, int pos) {
+  if (pos >= text.length()) {
+    return text.length();
+  }
+  int next = pos + 1;
+  while (next < text.length() &&
+         (static_cast<uint8_t>(text[next]) & 0xC0) == 0x80) {
+    ++next;
+  }
+  return next;
+}
+
+int trailingKanaSegmentStart() {
+  return committedKana.length() - trailingKanaSegment().length();
+}
+
 void replaceTrailingKanaSegment(const String& replacement) {
   int start = committedKana.length();
   while (start > 0) {
@@ -763,6 +797,14 @@ void runSearch() {
 }
 
 void selectPreviousResult() {
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    if (kanjiSpanOffset > 0) {
+      kanjiSpanOffset = previousUtf8CharStart(kanjiSourceSegment, kanjiSpanOffset);
+      dirty = true;
+    }
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiPicker) {
     if (selectedKanjiCandidate > 0 &&
         selectedKanjiCandidate % kKanjiGridColumns != 0) {
@@ -789,6 +831,15 @@ void selectPreviousResult() {
 }
 
 void selectNextResult() {
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    const int nextOffset = nextUtf8CharEnd(kanjiSourceSegment, kanjiSpanOffset);
+    if (nextOffset < kanjiSourceSegment.length()) {
+      kanjiSpanOffset = nextOffset;
+      dirty = true;
+    }
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiPicker) {
     if (selectedKanjiCandidate + 1 < kanjiCandidateCount &&
         selectedKanjiCandidate % kKanjiGridColumns != kKanjiGridColumns - 1) {
@@ -816,6 +867,11 @@ void selectNextResult() {
 }
 
 void selectUp() {
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    selectPreviousResult();
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiPicker) {
     if (selectedKanjiCandidate >= kKanjiGridColumns) {
       selectedKanjiCandidate -= kKanjiGridColumns;
@@ -827,6 +883,11 @@ void selectUp() {
 }
 
 void selectDown() {
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    selectNextResult();
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiPicker) {
     if (selectedKanjiCandidate + kKanjiGridColumns < kanjiCandidateCount) {
       selectedKanjiCandidate += kKanjiGridColumns;
@@ -846,7 +907,26 @@ void clearQuery() {
 
 void openKanjiPicker() {
   composePending(true);
-  kanjiReading = trailingKanaSegment();
+  kanjiSourceSegment = trailingKanaSegment();
+  kanjiSourceStart = trailingKanaSegmentStart();
+  kanjiSpanOffset = 0;
+  kanjiReading = "";
+  kanjiReplaceStart = kanjiSourceStart;
+  kanjiReplaceLength = kanjiSourceSegment.length();
+  selectedKanjiCandidate = 0;
+  kanjiCandidateCount = 0;
+  viewMode = ViewMode::KanjiSpanPicker;
+  dirty = true;
+}
+
+void confirmKanjiSpan() {
+  if (viewMode != ViewMode::KanjiSpanPicker) {
+    return;
+  }
+
+  kanjiReading = kanjiSourceSegment.substring(kanjiSpanOffset);
+  kanjiReplaceStart = kanjiSourceStart + kanjiSpanOffset;
+  kanjiReplaceLength = kanjiSourceSegment.length() - kanjiSpanOffset;
   selectedKanjiCandidate = 0;
   kanjiCandidateCount = 0;
   openKanjiIndex("picker");
@@ -863,7 +943,8 @@ void openKanjiPicker() {
 }
 
 void closeKanjiPicker() {
-  if (viewMode != ViewMode::KanjiPicker) {
+  if (viewMode != ViewMode::KanjiPicker &&
+      viewMode != ViewMode::KanjiSpanPicker) {
     return;
   }
   viewMode = ViewMode::Results;
@@ -876,7 +957,10 @@ void insertSelectedKanji() {
     closeKanjiPicker();
     return;
   }
-  replaceTrailingKanaSegment(kanjiCandidates[selectedKanjiCandidate]);
+  String updated = committedKana.substring(0, kanjiReplaceStart);
+  updated += kanjiCandidates[selectedKanjiCandidate];
+  updated += committedKana.substring(kanjiReplaceStart + kanjiReplaceLength);
+  committedKana = updated;
   clearSearchResults();
   viewMode = ViewMode::Results;
   dirty = true;
@@ -1118,6 +1202,46 @@ void drawKanjiPicker() {
   display.setFont(&fonts::efontJA_12);
 }
 
+void drawKanjiSpanPicker() {
+  auto &display = M5Cardputer.Display;
+  const int top = contentTop();
+  constexpr int footerTop = kFooterTop;
+  constexpr int pad = 5;
+  display.fillRect(0, top, display.width(), footerTop - top, TFT_BLACK);
+  display.setTextDatum(top_left);
+  display.setFont(&fonts::efontJA_12);
+
+  display.setTextColor(TFT_CYAN, TFT_BLACK);
+  display.drawString("Kanji span", pad, top + 2);
+
+  if (kanjiSourceSegment.length() == 0) {
+    display.setTextColor(TFT_ORANGE, TFT_BLACK);
+    display.drawString("No trailing kana", pad, top + 24);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Type kana before opening", pad, top + 42);
+    return;
+  }
+
+  const int spanStart = kanjiSourceStart + kanjiSpanOffset;
+  const String before = committedKana.substring(0, spanStart);
+  const String span = kanjiSourceSegment.substring(kanjiSpanOffset);
+  display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  display.drawString(ellipsize(String("Before: ") + before,
+                               display.width() - pad * 2),
+                     pad, top + 22);
+
+  display.setFont(&fonts::efontJA_16);
+  display.setTextColor(TFT_YELLOW, TFT_BLACK);
+  display.drawString(ellipsize(String("[") + span + "]",
+                               display.width() - pad * 2),
+                     pad, top + 42);
+  display.setFont(&fonts::efontJA_12);
+
+  display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  display.drawString("< widen    > shrink", pad, top + 72);
+  display.drawString("Enter candidates", pad, top + 88);
+}
+
 void drawFooter() {
   auto &display = M5Cardputer.Display;
   constexpr int footerTop = kFooterTop;
@@ -1127,7 +1251,10 @@ void drawFooter() {
 
   String left = "Enter search";
   String right = "/ kanji";
-  if (viewMode == ViewMode::KanjiPicker) {
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    left = "left/right span";
+    right = "Enter choose";
+  } else if (viewMode == ViewMode::KanjiPicker) {
     left = kanjiCandidateCount > 0 ? String(selectedKanjiCandidate + 1) + "/" +
                                          kanjiCandidateCount + "  arrows nav"
                                    : "Kanji picker";
@@ -1155,6 +1282,8 @@ void drawApp() {
   drawHeader();
   if (viewMode == ViewMode::Definition) {
     drawDefinition();
+  } else if (viewMode == ViewMode::KanjiSpanPicker) {
+    drawKanjiSpanPicker();
   } else if (viewMode == ViewMode::KanjiPicker) {
     drawKanjiPicker();
   } else {
@@ -1211,7 +1340,8 @@ void handleKeyboard() {
       leaveDefinition();
       return;
     }
-    if (viewMode == ViewMode::KanjiPicker) {
+    if (viewMode == ViewMode::KanjiSpanPicker ||
+        viewMode == ViewMode::KanjiPicker) {
       closeKanjiPicker();
       return;
     }
@@ -1219,6 +1349,10 @@ void handleKeyboard() {
     return;
   }
   if (keys.enter) {
+    if (viewMode == ViewMode::KanjiSpanPicker) {
+      confirmKanjiSpan();
+      return;
+    }
     if (viewMode == ViewMode::KanjiPicker) {
       insertSelectedKanji();
       return;
@@ -1231,7 +1365,8 @@ void handleKeyboard() {
       leaveDefinition();
       return;
     }
-    if (viewMode == ViewMode::KanjiPicker) {
+    if (viewMode == ViewMode::KanjiSpanPicker ||
+        viewMode == ViewMode::KanjiPicker) {
       closeKanjiPicker();
       return;
     }
@@ -1247,6 +1382,17 @@ void handleKeyboard() {
         selectDown();
       } else if (ch == ',') {
         leaveDefinition();
+      }
+    }
+    return;
+  }
+
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    for (const char ch : keys.word) {
+      if (ch == ';' || ch == ',') {
+        selectPreviousResult();
+      } else if (ch == '.' || ch == ' ' || ch == '/') {
+        selectNextResult();
       }
     }
     return;
