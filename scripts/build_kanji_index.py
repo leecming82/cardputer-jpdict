@@ -6,11 +6,15 @@ import os
 import struct
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from check_efont_coverage import U8g2Font, extract_font_array
+from text_normalization import dedupe_chars, normalize_display_text
 
 UNICODE_BUCKETS = 0x110000
 KEY_BYTES = 64
 BUCKET_STRUCT = struct.Struct("<II")
 RECORD_STRUCT = struct.Struct("<64sHIIH")
+DEFAULT_FONT_SOURCE = ".pio/libdeps/m5stack-cardputer-adv/M5GFX/src/lgfx/Fonts/efont/lgfx_efont_ja.c"
+DEFAULT_FONT_SYMBOL = "lgfx_efont_ja_16"
 
 
 def katakana_to_hiragana(text):
@@ -91,15 +95,41 @@ def parse_kanjidic2(path):
 def convert(args):
     os.makedirs(args.out_dir, exist_ok=True)
     readings = parse_kanjidic2(args.src)
+    font = None
+    if args.filter_unsupported_candidates:
+        font = U8g2Font(extract_font_array(args.font_source, args.font_symbol))
 
     entries = []
+    normalized_candidates = 0
+    deduplicated_candidates = 0
+    dropped_unsupported_candidates = 0
     for reading, ranked in readings.items():
-        candidates = [
+        raw_candidates = [
             kanji
             for kanji, _rank in sorted(ranked.items(), key=lambda item: item[1])
-        ][: args.max_candidates_per_reading]
+        ]
+        seen = set()
+        candidates = []
+        for raw in raw_candidates:
+            normalized = normalize_display_text(raw)
+            if normalized != raw:
+                normalized_candidates += 1
+            for ch in normalized:
+                if ch in seen:
+                    deduplicated_candidates += 1
+                    continue
+                seen.add(ch)
+                if font is not None and not font.has_glyph(ord(ch)):
+                    dropped_unsupported_candidates += 1
+                    continue
+                candidates.append(ch)
+                if len(candidates) >= args.max_candidates_per_reading:
+                    break
+            if len(candidates) >= args.max_candidates_per_reading:
+                break
+        candidates = dedupe_chars("".join(candidates))
         if candidates:
-            entries.append((reading, "".join(candidates)))
+            entries.append((reading, candidates))
     entries.sort(key=lambda item: item[0])
 
     buckets = [(0, 0)] * UNICODE_BUCKETS
@@ -140,6 +170,13 @@ def convert(args):
         "source": os.path.basename(args.src),
         "reading_count": len(entries),
         "max_candidates_per_reading": args.max_candidates_per_reading,
+        "normalization": {
+            "normalized_candidates": normalized_candidates,
+            "deduplicated_candidates": deduplicated_candidates,
+            "filter_unsupported_candidates": args.filter_unsupported_candidates,
+            "font_symbol": args.font_symbol if args.filter_unsupported_candidates else "",
+            "dropped_unsupported_candidates": dropped_unsupported_candidates,
+        },
         "files": ["manifest.json", "buckets.bin", "records.bin", "strings.bin"],
     }
     with open(os.path.join(args.out_dir, "manifest.json"), "w", encoding="utf-8") as f:
@@ -175,6 +212,14 @@ def main():
     p.add_argument("src")
     p.add_argument("out_dir")
     p.add_argument("--max-candidates-per-reading", type=int, default=96)
+    p.add_argument("--font-source", default=DEFAULT_FONT_SOURCE)
+    p.add_argument("--font-symbol", default=DEFAULT_FONT_SYMBOL)
+    p.add_argument(
+        "--no-filter-unsupported-candidates",
+        dest="filter_unsupported_candidates",
+        action="store_false",
+    )
+    p.set_defaults(filter_unsupported_candidates=True)
     p.set_defaults(func=convert)
 
     p = sub.add_parser("lookup")

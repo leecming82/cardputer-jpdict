@@ -7,6 +7,7 @@ import random
 import struct
 import time
 import zipfile
+from text_normalization import normalize_display_text
 
 UNICODE_BUCKETS = 0x110000
 KEY_BYTES = 96
@@ -369,6 +370,14 @@ def make_lookup_entry(entry, key=None, alias_kind="term"):
     return copied
 
 
+def normalized_entry(entry):
+    copied = dict(entry)
+    copied["term"] = normalize_display_text(copied["term"])
+    copied["reading"] = normalize_display_text(copied["reading"])
+    copied["definition"] = normalize_display_text(copied["definition"])
+    return copied
+
+
 def convert(args):
     os.makedirs(args.out_dir, exist_ok=True)
     index, raw_entries = load_yomitan_entries(args.src)
@@ -378,6 +387,10 @@ def convert(args):
     skipped = {"first_char_scope": 0, "min_score": 0, "tags": 0, "negative_sequence": 0}
     added_reading_aliases = 0
     drop_tags = {tag.strip() for tag in args.drop_tags.split(",") if tag.strip()}
+    normalized_terms = 0
+    normalized_readings = 0
+    normalized_definitions = 0
+    added_normalized_term_aliases = 0
 
     for entry in raw_entries:
         if args.min_score is not None and entry["score"] < args.min_score:
@@ -390,14 +403,26 @@ def convert(args):
             skipped["tags"] += 1
             continue
 
-        if include_first_char(entry["term"], args.first_char_scope):
-            entries.append(make_lookup_entry(entry))
+        display_entry = normalized_entry(entry)
+        if display_entry["term"] != entry["term"]:
+            normalized_terms += 1
+        if display_entry["reading"] != entry["reading"]:
+            normalized_readings += 1
+        if display_entry["definition"] != entry["definition"]:
+            normalized_definitions += 1
+
+        if include_first_char(display_entry["term"], args.first_char_scope):
+            entries.append(make_lookup_entry(display_entry))
         else:
             skipped["first_char_scope"] += 1
 
-        if args.reading_aliases and entry["reading"] and entry["reading"] != entry["term"]:
-            if include_first_char(entry["reading"], args.first_char_scope):
-                entries.append(make_lookup_entry(entry, entry["reading"], "reading"))
+        if entry["term"] != display_entry["term"] and include_first_char(entry["term"], args.first_char_scope):
+            entries.append(make_lookup_entry(display_entry, entry["term"], "old_form"))
+            added_normalized_term_aliases += 1
+
+        if args.reading_aliases and display_entry["reading"] and display_entry["reading"] != display_entry["term"]:
+            if include_first_char(display_entry["reading"], args.first_char_scope):
+                entries.append(make_lookup_entry(display_entry, display_entry["reading"], "reading"))
                 added_reading_aliases += 1
 
     entries.sort(key=lambda e: (e["key"], e["tier"], -e["score"], e["reading"], e["term"], e["sequence"]))
@@ -456,7 +481,7 @@ def convert(args):
                     key.ljust(KEY_BYTES, b"\0"),
                     len(key),
                     entry["tier"],
-                    1 if entry["alias_kind"] == "reading" else 0,
+                    1 if entry["alias_kind"] == "reading" else 2 if entry["alias_kind"] == "old_form" else 0,
                     term_off,
                     term_len,
                     reading_off,
@@ -509,7 +534,13 @@ def convert(args):
             "first_char_scope": args.first_char_scope,
             "reading_aliases": args.reading_aliases,
             "added_reading_aliases": added_reading_aliases,
+            "added_normalized_term_aliases": added_normalized_term_aliases,
             "deduplicated_lookup_records": deduplicated_lookup_records,
+            "normalized_strings": {
+                "terms": normalized_terms,
+                "readings": normalized_readings,
+                "definitions": normalized_definitions,
+            },
             "min_score": args.min_score,
             "drop_tags": sorted(drop_tags),
             "drop_negative_sequence": args.drop_negative_sequence,
@@ -599,7 +630,7 @@ def lookup(args):
         elapsed_us = (time.perf_counter_ns() - start) / 1000
         print(f"{len(matches)} matches in {elapsed_us:.1f} us")
         for match in matches[: args.limit]:
-            alias = "reading" if match["flags"] & 1 else "term"
+            alias = "reading" if match["flags"] & 1 else "old_form" if match["flags"] & 2 else "term"
             print(
                 f"{match['term']} [{match['reading']}] key={match['key']} alias={alias} "
                 f"tier={match['tier']} score={match['score']} seq={match['sequence']}"
