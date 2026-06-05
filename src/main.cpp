@@ -30,6 +30,7 @@ constexpr size_t kKanjiGridColumns = 6;
 constexpr uint32_t kMarqueeFrameMs = 240;
 constexpr uint32_t kMarqueePauseMs = 1500;
 constexpr uint32_t kMarqueeMsPerPixel = 95;
+constexpr uint32_t kMarqueeAnimateAfterActivityMs = 10000;
 constexpr uint32_t kIdleDelayMs = 40;
 constexpr uint32_t kBacklightDimAfterMs = 15000;
 constexpr uint32_t kBacklightOffAfterMs = 300000;
@@ -315,6 +316,11 @@ int marqueeOffsetForText(const String& text, int width) {
   return offset;
 }
 
+bool shouldAnimateMarquee(uint32_t now) {
+  return !backlightDimmed && !backlightOff &&
+         now - lastInputAt <= kMarqueeAnimateAfterActivityMs;
+}
+
 void drawMarqueeFrame() {
   auto& display = M5Cardputer.Display;
   if (!marqueeActive) {
@@ -342,7 +348,8 @@ void drawMarqueeText(int x, int y, int width, int height, const String& text,
   display.setTextDatum(top_left);
   display.setTextColor(color, background);
 
-  if (!allowMarquee || textWidth(text) <= width) {
+  if (!allowMarquee || textWidth(text) <= width ||
+      !shouldAnimateMarquee(millis())) {
     display.drawString(ellipsize(text, width), x, y);
     return;
   }
@@ -2183,7 +2190,8 @@ void loop() {
     drawApp();
   }
 
-  if (!helpVisible && marqueeActive && now - lastMarqueeFrame >= kMarqueeFrameMs) {
+  if (!helpVisible && marqueeActive && shouldAnimateMarquee(now) &&
+      now - lastMarqueeFrame >= kMarqueeFrameMs) {
     lastMarqueeFrame = now;
     drawMarqueeFrame();
   }
