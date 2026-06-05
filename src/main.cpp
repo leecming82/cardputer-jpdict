@@ -795,12 +795,14 @@ bool isNoiseDefinitionItem(const String& item) {
 struct ParsedDefinition {
   String attributes;
   String glosses;
+  String numberedGlosses;
 };
 
 ParsedDefinition parseDefinition(const String& rawDefinition) {
   ParsedDefinition parsed;
   const String definition = cleanDefinitionForDisplay(rawDefinition);
   bool seenGloss = false;
+  int glossCount = 0;
   int start = 0;
 
   while (start < static_cast<int>(definition.length())) {
@@ -815,11 +817,18 @@ ParsedDefinition parseDefinition(const String& rawDefinition) {
         appendAttribute(parsed.attributes, item);
       } else {
         seenGloss = true;
+        ++glossCount;
         if (parsed.glosses.length() > 0) {
-          parsed.glosses += " ";
+          parsed.glosses += " · ";
         }
-        parsed.glosses += "- ";
         parsed.glosses += item;
+
+        if (parsed.numberedGlosses.length() > 0) {
+          parsed.numberedGlosses += "  ";
+        }
+        parsed.numberedGlosses += glossCount;
+        parsed.numberedGlosses += ". ";
+        parsed.numberedGlosses += item;
       }
     }
 
@@ -831,7 +840,10 @@ ParsedDefinition parseDefinition(const String& rawDefinition) {
 
   if (!seenGloss && parsed.attributes.length() > 0) {
     parsed.glosses = parsed.attributes;
+    parsed.numberedGlosses = parsed.attributes;
     parsed.attributes = "";
+  } else if (glossCount == 1) {
+    parsed.numberedGlosses = parsed.glosses;
   }
   return parsed;
 }
@@ -855,7 +867,7 @@ int maxDefinitionScrollLine() {
   const int bodyHeight = footerTop - bodyY - 2;
   const int visibleLines = bodyHeight > 0 ? bodyHeight / lineHeight : 0;
   const int wrappedLines =
-      countWrappedLines(display.width() - pad * 2, definition.glosses,
+      countWrappedLines(display.width() - pad * 2, definition.numberedGlosses,
                         largeDefinitionText);
   const int maxScroll = wrappedLines - visibleLines;
   return maxScroll > 0 ? maxScroll : 0;
@@ -1228,7 +1240,7 @@ void drawDefinition() {
 
   const int bodyY = dividerY + 5;
   drawWrappedText(pad, bodyY, display.width() - pad * 2,
-                  footerTop - bodyY - 2, definition.glosses, TFT_WHITE,
+                  footerTop - bodyY - 2, definition.numberedGlosses, TFT_WHITE,
                   TFT_BLACK, definitionScrollLine, true);
 }
 
