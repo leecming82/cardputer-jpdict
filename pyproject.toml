@@ -1,0 +1,9 @@
+[project]
+name = "cardputer-jpdict"
+version = "0.1.0"
+description = "Japanese electronic dictionary firmware for the M5Stack Cardputer-Adv."
+requires-python = ">=3.10"
+dependencies = [
+    "platformio>=6.1.18",
+]
+
