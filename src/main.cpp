@@ -27,6 +27,10 @@ constexpr size_t kKanjiGridColumns = 6;
 constexpr uint32_t kMarqueeFrameMs = 180;
 constexpr uint32_t kMarqueePauseMs = 1200;
 constexpr uint32_t kMarqueeMsPerPixel = 70;
+constexpr uint32_t kIdleDelayMs = 10;
+constexpr uint32_t kBacklightDimAfterMs = 60000;
+constexpr uint8_t kBacklightNormal = 128;
+constexpr uint8_t kBacklightDim = 32;
 
 String committedKana;
 String pendingRomaji;
@@ -45,6 +49,8 @@ bool searched = false;
 bool dirty = true;
 bool marqueeActive = false;
 uint32_t lastMarqueeFrame = 0;
+uint32_t lastInputAt = 0;
+bool backlightDimmed = false;
 int marqueeX = 0;
 int marqueeY = 0;
 int marqueeWidth = 0;
@@ -1176,11 +1182,28 @@ void leaveDefinition() {
   dirty = true;
 }
 
+void noteInputActivity() {
+  lastInputAt = millis();
+  if (backlightDimmed) {
+    M5Cardputer.Display.setBrightness(kBacklightNormal);
+    backlightDimmed = false;
+  }
+}
+
+void updateBacklightIdle(uint32_t now) {
+  if (!backlightDimmed && now - lastInputAt >= kBacklightDimAfterMs) {
+    M5Cardputer.Display.setBrightness(kBacklightDim);
+    backlightDimmed = true;
+  }
+}
+
 void handleKeyboard() {
   auto &keyboard = M5Cardputer.Keyboard;
   if (!keyboard.isChange() || !keyboard.isPressed()) {
     return;
   }
+
+  noteInputActivity();
 
   auto &keys = keyboard.keysState();
   if (keys.del) {
@@ -1273,9 +1296,10 @@ void setup() {
 
   auto &display = M5Cardputer.Display;
   display.setRotation(1);
-  display.setBrightness(128);
+  display.setBrightness(kBacklightNormal);
   display.clear(TFT_BLACK);
 
+  lastInputAt = millis();
   Serial.println("cardputer-jpdict interactive UI shell");
   probeStorage();
   drawApp();
@@ -1294,4 +1318,7 @@ void loop() {
     lastMarqueeFrame = now;
     drawMarqueeFrame();
   }
+
+  updateBacklightIdle(now);
+  delay(kIdleDelayMs);
 }
