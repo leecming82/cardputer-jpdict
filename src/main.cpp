@@ -31,6 +31,10 @@ constexpr uint32_t kIdleDelayMs = 10;
 constexpr uint32_t kBacklightDimAfterMs = 60000;
 constexpr uint8_t kBacklightNormal = 128;
 constexpr uint8_t kBacklightDim = 32;
+constexpr int kBatteryAdcPin = 10;
+constexpr float kBatteryAdcMultiplier = 2.0f;
+constexpr float kBatteryMinMillivolts = 3300.0f;
+constexpr float kBatteryMaxMillivolts = 4150.0f;
 
 String committedKana;
 String pendingRomaji;
@@ -329,13 +333,58 @@ void drawMarqueeText(int x, int y, int width, int height, const String& text,
   drawMarqueeFrame();
 }
 
+int readBatteryLevelFromAdc() {
+  static bool adcInitialized = false;
+  if (!adcInitialized) {
+    pinMode(kBatteryAdcPin, INPUT);
+    adcInitialized = true;
+  }
+
+  constexpr int samples = 4;
+  uint32_t totalMillivolts = 0;
+  for (int i = 0; i < samples; ++i) {
+    totalMillivolts += analogReadMilliVolts(kBatteryAdcPin);
+  }
+
+  const float adcMillivolts = static_cast<float>(totalMillivolts) / samples;
+  const float batteryMillivolts = adcMillivolts * kBatteryAdcMultiplier;
+  if (batteryMillivolts < 2500.0f || batteryMillivolts > 5000.0f) {
+    return -1;
+  }
+
+  const float percent =
+      ((batteryMillivolts - kBatteryMinMillivolts) /
+       (kBatteryMaxMillivolts - (kBatteryMinMillivolts + 50.0f))) *
+      100.0f;
+  if (percent <= 0.0f) {
+    return 1;
+  }
+  if (percent >= 100.0f) {
+    return 100;
+  }
+  return static_cast<int>(percent);
+}
+
+int readBatteryLevel() {
+  const int adcLevel = readBatteryLevelFromAdc();
+  if (adcLevel > 0 && adcLevel <= 100) {
+    return adcLevel;
+  }
+
+  const int32_t apiLevel = M5Cardputer.Power.getBatteryLevel();
+  if (apiLevel > 0 && apiLevel <= 100) {
+    return static_cast<int>(apiLevel);
+  }
+  return -1;
+}
+
 void drawBatteryIndicator(int x, int y, int width, int height,
                           uint16_t foreground, uint16_t background) {
   auto& display = M5Cardputer.Display;
   display.fillRect(x, y, width, height, background);
 
-  const int32_t level = M5Cardputer.Power.getBatteryLevel();
-  const bool hasLevel = level >= 0 && level <= 100;
+  const int32_t level = readBatteryLevel();
+  const bool hasLevel = level > 0 && level <= 100;
   const int iconX = x;
   const int iconY = y + 4;
   const int iconW = 15;
