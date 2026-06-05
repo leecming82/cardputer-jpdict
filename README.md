@@ -13,6 +13,14 @@ the query before running a normal dictionary lookup. Dictionary and kanji data
 are prepared once on the host and copied to the microSD card, so the device does
 not need to parse or index large source files at startup.
 
+## Usage
+
+Type romaji to compose kana, then press `Enter` to search. Use the arrow keys
+to move through results, `Enter` or the right arrow to open a full definition,
+and the left arrow or `Del` to go back. Press the right arrow from the search
+screen to open the kanji picker for the trailing kana reading. `Tab` clears the
+query, and `Ctrl` shows contextual help for the current screen.
+
 ## Setup
 
 ```sh

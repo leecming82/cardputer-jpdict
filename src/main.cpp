@@ -58,6 +58,7 @@ int kanjiReplaceLength = 0;
 bool searched = false;
 bool dirty = true;
 bool marqueeActive = false;
+bool helpVisible = false;
 uint32_t lastMarqueeFrame = 0;
 uint32_t lastInputAt = 0;
 bool backlightDimmed = false;
@@ -95,12 +96,10 @@ int definitionScrollLine = 0;
 
 constexpr int kCompactContentTop = 26;
 constexpr int kLargeContentTop = 43;
-constexpr int kFooterTop = 117;
 constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
 
 String currentInputText();
-void drawFooter();
 
 bool usesLargeSearchHeader() {
   return viewMode == ViewMode::Results && !searched &&
@@ -109,6 +108,10 @@ bool usesLargeSearchHeader() {
 
 int contentTop() {
   return usesLargeSearchHeader() ? kLargeContentTop : kCompactContentTop;
+}
+
+int contentBottom() {
+  return M5Cardputer.Display.height();
 }
 
 String joinPath(const char* base, const char* leaf) {
@@ -927,7 +930,7 @@ void rebuildResultPreviewLines() {
 
 size_t resultListVisibleRows() {
   const int top = contentTop();
-  const int height = kFooterTop - top;
+  const int height = contentBottom() - top;
   return height > 0 ? height / kResultRowHeight : 0;
 }
 
@@ -984,7 +987,6 @@ void redrawResultSelection(size_t oldSelected, size_t newSelected) {
   const size_t firstRow = firstVisibleResultFor(newSelected);
   drawResultListRow(oldSelected, firstRow);
   drawResultListRow(newSelected, firstRow);
-  drawFooter();
 }
 
 int maxDefinitionScrollLine() {
@@ -994,7 +996,7 @@ int maxDefinitionScrollLine() {
 
   auto &display = M5Cardputer.Display;
   const int top = kCompactContentTop;
-  constexpr int footerTop = kFooterTop;
+  const int bottom = contentBottom();
   constexpr int pad = 5;
   constexpr bool largeDefinitionText = true;
   const int lineHeight = bodyLineHeight(largeDefinitionText);
@@ -1003,7 +1005,7 @@ int maxDefinitionScrollLine() {
       parseDefinition(results[selectedResult].definition);
   const int dividerY = top + 36;
   const int bodyY = dividerY + 5;
-  const int bodyHeight = footerTop - bodyY - 2;
+  const int bodyHeight = bottom - bodyY - 2;
   const int visibleLines = bodyHeight > 0 ? bodyHeight / lineHeight : 0;
   const int wrappedLines =
       countWrappedLines(display.width() - pad * 2, definition.numberedGlosses,
@@ -1245,7 +1247,7 @@ void deleteChar() {
 
 void drawHeader() {
   auto &display = M5Cardputer.Display;
-  const int headerBottom = contentTop() - 2;
+  const int headerBottom = contentTop();
   display.fillRect(0, 0, display.width(), headerBottom, TFT_NAVY);
   display.setTextDatum(top_left);
 
@@ -1271,10 +1273,10 @@ void drawHeader() {
 void drawResults() {
   auto &display = M5Cardputer.Display;
   const int top = contentTop();
-  constexpr int footerTop = kFooterTop;
+  const int bottom = contentBottom();
   constexpr int pad = 5;
 
-  display.fillRect(0, top, display.width(), footerTop - top, TFT_BLACK);
+  display.fillRect(0, top, display.width(), bottom - top, TFT_BLACK);
 
   if (!searched) {
     display.setTextDatum(top_left);
@@ -1284,7 +1286,7 @@ void drawResults() {
     display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
     if (storageState == StorageState::DictionaryOk) {
       display.drawString("Type: Romaji", pad, top + 18);
-      display.drawString("Enter: Search /: Kanji", pad, top + 33);
+      display.drawString("Enter: Search  Right: Kanji", pad, top + 33);
     } else {
       display.drawString(ellipsize(startupDetailLine(), display.width() - pad * 2),
                          pad, top + 18);
@@ -1320,10 +1322,10 @@ void drawResults() {
 void drawDefinition() {
   auto &display = M5Cardputer.Display;
   const int top = contentTop();
-  constexpr int footerTop = kFooterTop;
+  const int bottom = contentBottom();
   constexpr int pad = 5;
 
-  display.fillRect(0, top, display.width(), footerTop - top, TFT_BLACK);
+  display.fillRect(0, top, display.width(), bottom - top, TFT_BLACK);
 
   if (!searched || resultCount == 0) {
     viewMode = ViewMode::Results;
@@ -1359,16 +1361,16 @@ void drawDefinition() {
 
   const int bodyY = dividerY + 5;
   drawWrappedText(pad, bodyY, display.width() - pad * 2,
-                  footerTop - bodyY - 2, definition.numberedGlosses, TFT_WHITE,
+                  bottom - bodyY - 2, definition.numberedGlosses, TFT_WHITE,
                   TFT_BLACK, definitionScrollLine, true);
 }
 
 void drawKanjiPicker() {
   auto &display = M5Cardputer.Display;
   const int top = contentTop();
-  constexpr int footerTop = kFooterTop;
+  const int bottom = contentBottom();
   constexpr int pad = 5;
-  display.fillRect(0, top, display.width(), footerTop - top, TFT_BLACK);
+  display.fillRect(0, top, display.width(), bottom - top, TFT_BLACK);
   display.setTextDatum(top_left);
 
   display.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -1432,9 +1434,9 @@ void drawKanjiPicker() {
 void drawKanjiSpanPicker() {
   auto &display = M5Cardputer.Display;
   const int top = contentTop();
-  constexpr int footerTop = kFooterTop;
+  const int bottom = contentBottom();
   constexpr int pad = 5;
-  display.fillRect(0, top, display.width(), footerTop - top, TFT_BLACK);
+  display.fillRect(0, top, display.width(), bottom - top, TFT_BLACK);
   display.setTextDatum(top_left);
   display.setFont(&fonts::efontJA_12);
 
@@ -1469,55 +1471,83 @@ void drawKanjiSpanPicker() {
   display.drawString("Enter: Candidates", pad, top + 88);
 }
 
-void drawFooter() {
-  auto &display = M5Cardputer.Display;
-  constexpr int footerTop = kFooterTop;
-  const int footerHeight = display.height() - footerTop;
-
-  String left = "Enter: Search";
-  String right = "/: Kanji";
+String helpTitle() {
   if (viewMode == ViewMode::KanjiSpanPicker) {
-    left = "Left/Right: Span";
-    right = "Enter: Choose";
+    return "Kanji Span";
+  }
+  if (viewMode == ViewMode::KanjiPicker) {
+    return "Kanji Picker";
+  }
+  if (viewMode == ViewMode::Definition) {
+    return "Definition";
+  }
+  if (searched && resultCount > 0) {
+    return "Results";
+  }
+  return "Search";
+}
+
+size_t helpLines(String* lines, size_t maxLines) {
+  size_t count = 0;
+  auto addLine = [&](const String& line) {
+    if (count < maxLines) {
+      lines[count++] = line;
+    }
+  };
+
+  if (viewMode == ViewMode::KanjiSpanPicker) {
+    addLine("Left/Right: Span");
+    addLine("Enter: Choose");
+    addLine("Del: Cancel");
   } else if (viewMode == ViewMode::KanjiPicker) {
-    left = kanjiCandidateCount > 0 ? String(selectedKanjiCandidate + 1) + "/" +
-                                         kanjiCandidateCount + "  Arrows: Nav"
-                                   : "Kanji Picker";
-    right = "Enter: Insert";
+    addLine("Arrows: Nav");
+    addLine("Enter: Insert");
+    addLine("Del: Cancel");
   } else if (viewMode == ViewMode::Definition) {
-    left = String("Arrows: Scroll ") + (definitionScrollLine + 1);
-    right = "Left: Back";
+    addLine("Arrows: Scroll");
+    addLine("Left/Del: Back");
+    addLine("Ctrl: Hide Help");
   } else if (searched && resultCount > 0) {
-    left = String(selectedResult + 1) + "/" + resultCount + "  Arrows: Nav";
-    right = "Right: Open";
+    addLine("Arrows: Nav");
+    addLine("Enter/Right: Open");
+    addLine("Tab: Clear");
   } else {
-    right = "Right: Kanji";
+    addLine("Type: Romaji");
+    addLine("Enter: Search");
+    addLine("Right: Kanji");
   }
 
-  static LGFX_Sprite footerSprite(&display);
-  if (footerSprite.getBuffer() == nullptr) {
-    footerSprite.setColorDepth(16);
-    footerSprite.createSprite(display.width(), footerHeight);
+  if (count < maxLines && viewMode != ViewMode::Definition) {
+    addLine("Ctrl: Hide Help");
   }
-  if (footerSprite.getBuffer() != nullptr) {
-    footerSprite.setFont(&fonts::efontJA_12);
-    footerSprite.fillSprite(TFT_DARKGREY);
-    footerSprite.setTextColor(TFT_WHITE, TFT_DARKGREY);
-    footerSprite.setTextDatum(top_left);
-    footerSprite.drawString(left, 4, 3);
-    footerSprite.setTextDatum(top_right);
-    footerSprite.drawString(right, display.width() - 4, 3);
-    footerSprite.pushSprite(0, footerTop);
+  return count;
+}
+
+void drawHelpOverlay() {
+  if (!helpVisible) {
     return;
   }
 
-  display.fillRect(0, footerTop, display.width(), footerHeight, TFT_DARKGREY);
+  auto &display = M5Cardputer.Display;
+  constexpr size_t maxLines = 5;
+  String lines[maxLines];
+  const size_t lineCount = helpLines(lines, maxLines);
+  const int panelW = display.width() - 34;
+  const int panelH = 26 + static_cast<int>(lineCount) * 15 + 8;
+  const int panelX = (display.width() - panelW) / 2;
+  const int panelY = (display.height() - panelH) / 2;
+
+  display.fillRect(panelX - 3, panelY - 3, panelW + 6, panelH + 6, TFT_BLACK);
+  display.fillRect(panelX, panelY, panelW, panelH, TFT_DARKGREY);
+  display.drawRect(panelX, panelY, panelW, panelH, TFT_LIGHTGREY);
   display.setFont(&fonts::efontJA_12);
   display.setTextDatum(top_left);
+  display.setTextColor(TFT_YELLOW, TFT_DARKGREY);
+  display.drawString(helpTitle(), panelX + 8, panelY + 6);
   display.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  display.drawString(left, 4, footerTop + 3);
-  display.setTextDatum(top_right);
-  display.drawString(right, display.width() - 4, footerTop + 3);
+  for (size_t i = 0; i < lineCount; ++i) {
+    display.drawString(lines[i], panelX + 8, panelY + 24 + i * 15);
+  }
 }
 
 void drawApp() {
@@ -1536,7 +1566,7 @@ void drawApp() {
   } else {
     drawResults();
   }
-  drawFooter();
+  drawHelpOverlay();
   dirty = false;
 }
 
@@ -1582,6 +1612,17 @@ void handleKeyboard() {
   noteInputActivity();
 
   auto &keys = keyboard.keysState();
+  if (keys.ctrl) {
+    helpVisible = !helpVisible;
+    dirty = true;
+    return;
+  }
+  if (helpVisible) {
+    helpVisible = false;
+    dirty = true;
+    return;
+  }
+
   if (keys.del) {
     if (viewMode == ViewMode::Definition) {
       leaveDefinition();
@@ -1707,7 +1748,7 @@ void loop() {
     drawApp();
   }
 
-  if (marqueeActive && now - lastMarqueeFrame >= kMarqueeFrameMs) {
+  if (!helpVisible && marqueeActive && now - lastMarqueeFrame >= kMarqueeFrameMs) {
     lastMarqueeFrame = now;
     drawMarqueeFrame();
   }
