@@ -1250,13 +1250,9 @@ ParsedDefinition parseDefinition(const String& rawDefinition) {
 
 String compactResultLine(const JapaneseDictionaryMatch& result) {
   String line = result.term;
-  if (result.termCount > 1) {
-    line += " +";
-    line += static_cast<int>(result.termCount - 1);
-  }
-  line += " [";
+  line += " ";
   line += result.reading;
-  line += "] ";
+  line += " ";
   line += parseDefinition(result.definition).glosses;
   return line;
 }
@@ -1264,12 +1260,8 @@ String compactResultLine(const JapaneseDictionaryMatch& result) {
 constexpr int kResultRowHeight = 20;
 
 void rebuildResultPreviewLines() {
-  auto& display = M5Cardputer.Display;
-  constexpr int pad = 5;
-  display.setFont(&fonts::efontJA_16);
   for (size_t i = 0; i < resultCount; ++i) {
-    resultPreviewLines[i] =
-        ellipsize(compactResultLine(results[i]), display.width() - pad * 2);
+    resultPreviewLines[i] = compactResultLine(results[i]);
   }
   for (size_t i = resultCount; i < kMaxResults; ++i) {
     resultPreviewLines[i] = "";
