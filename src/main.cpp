@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SD.h>
 #include <SPI.h>
+#include <WiFi.h>
 #include "JapaneseDictionary.h"
 #include "KanjiIndex.h"
 #include "M5Cardputer.h"
@@ -29,10 +30,13 @@ constexpr size_t kKanjiGridColumns = 6;
 constexpr uint32_t kMarqueeFrameMs = 240;
 constexpr uint32_t kMarqueePauseMs = 1500;
 constexpr uint32_t kMarqueeMsPerPixel = 95;
-constexpr uint32_t kIdleDelayMs = 10;
-constexpr uint32_t kBacklightDimAfterMs = 60000;
-constexpr uint8_t kBacklightNormal = 128;
-constexpr uint8_t kBacklightDim = 32;
+constexpr uint32_t kIdleDelayMs = 40;
+constexpr uint32_t kBacklightDimAfterMs = 15000;
+constexpr uint32_t kBacklightOffAfterMs = 300000;
+constexpr uint32_t kBatteryRefreshMs = 60000;
+constexpr uint8_t kBacklightNormal = 96;
+constexpr uint8_t kBacklightDim = 8;
+constexpr uint8_t kBacklightOff = 0;
 constexpr int kBatteryAdcPin = 10;
 constexpr float kBatteryAdcMultiplier = 2.0f;
 constexpr float kBatteryMinMillivolts = 3300.0f;
@@ -68,6 +72,10 @@ bool segmentedSearch = false;
 uint32_t lastMarqueeFrame = 0;
 uint32_t lastInputAt = 0;
 bool backlightDimmed = false;
+bool backlightOff = false;
+bool batteryCacheValid = false;
+uint32_t lastBatteryReadAt = 0;
+int cachedBatteryLevel = -1;
 int marqueeX = 0;
 int marqueeY = 0;
 int marqueeWidth = 0;
@@ -477,12 +485,22 @@ int readBatteryLevel() {
   return -1;
 }
 
+int readCachedBatteryLevel() {
+  const uint32_t now = millis();
+  if (!batteryCacheValid || now - lastBatteryReadAt >= kBatteryRefreshMs) {
+    cachedBatteryLevel = readBatteryLevel();
+    lastBatteryReadAt = now;
+    batteryCacheValid = true;
+  }
+  return cachedBatteryLevel;
+}
+
 void drawBatteryIndicator(int x, int y, int width, int height,
                           uint16_t foreground, uint16_t background) {
   auto& display = M5Cardputer.Display;
   display.fillRect(x, y, width, height, background);
 
-  const int32_t level = readBatteryLevel();
+  const int32_t level = readCachedBatteryLevel();
   const bool hasLevel = level > 0 && level <= 100;
   const int iconX = x;
   const int iconY = y + 4;
@@ -2000,14 +2018,20 @@ void leaveDefinition() {
 
 void noteInputActivity() {
   lastInputAt = millis();
-  if (backlightDimmed) {
+  if (backlightDimmed || backlightOff) {
     M5Cardputer.Display.setBrightness(kBacklightNormal);
     backlightDimmed = false;
+    backlightOff = false;
   }
 }
 
 void updateBacklightIdle(uint32_t now) {
-  if (!backlightDimmed && now - lastInputAt >= kBacklightDimAfterMs) {
+  const uint32_t idleMs = now - lastInputAt;
+  if (!backlightOff && idleMs >= kBacklightOffAfterMs) {
+    M5Cardputer.Display.setBrightness(kBacklightOff);
+    backlightDimmed = true;
+    backlightOff = true;
+  } else if (!backlightDimmed && idleMs >= kBacklightDimAfterMs) {
     M5Cardputer.Display.setBrightness(kBacklightDim);
     backlightDimmed = true;
   }
@@ -2134,6 +2158,7 @@ void handleKeyboard() {
 void setup() {
   auto cfg = M5.config();
   M5Cardputer.begin(cfg, true);
+  WiFi.mode(WIFI_OFF);
 
   Serial.begin(115200);
   delay(100);
