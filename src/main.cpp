@@ -119,6 +119,7 @@ void clearSearchResults();
 void removeLastUtf8Char(String& text);
 int previousUtf8CharStart(const String& text, int pos);
 int nextUtf8CharEnd(const String& text, int pos);
+void drawResults();
 
 bool usesLargeSearchHeader() {
   return viewMode == ViewMode::Results && !searched &&
@@ -1310,7 +1311,17 @@ String compactResultLine(const JapaneseDictionaryMatch& result) {
   return line;
 }
 
+String resultTermReadingLine(const JapaneseDictionaryMatch& result) {
+  String line = result.term;
+  if (shouldShowPreviewReading(result)) {
+    line += " ";
+    line += result.reading;
+  }
+  return line;
+}
+
 constexpr int kResultRowHeight = 20;
+constexpr int kSelectedResultRowHeight = kResultRowHeight * 2;
 
 void rebuildResultPreviewLines() {
   for (size_t i = 0; i < resultCount; ++i) {
@@ -1321,65 +1332,88 @@ void rebuildResultPreviewLines() {
   }
 }
 
-size_t resultListVisibleRows() {
+int resultListHeight() {
   const int top = contentTop();
   const int height = contentBottom() - top;
-  return height > 0 ? height / kResultRowHeight : 0;
+  return height > 0 ? height : 0;
+}
+
+int resultListRowHeight(size_t resultIndex) {
+  return resultIndex == selectedResult ? kSelectedResultRowHeight
+                                       : kResultRowHeight;
 }
 
 size_t firstVisibleResultFor(size_t selected) {
-  const size_t visibleRows = resultListVisibleRows();
-  if (visibleRows > 0 && selected >= visibleRows) {
-    return selected - visibleRows + 1;
+  const int height = resultListHeight();
+  if (height <= kSelectedResultRowHeight) {
+    return selected;
+  }
+
+  const size_t rowsBeforeSelected =
+      (height - kSelectedResultRowHeight) / kResultRowHeight;
+  if (selected > rowsBeforeSelected) {
+    return selected - rowsBeforeSelected;
   }
   return 0;
 }
 
-void drawResultListRow(size_t resultIndex, size_t firstRow) {
-  if (resultIndex >= resultCount || resultIndex < firstRow) {
+void drawResultListRow(size_t resultIndex, int y) {
+  if (resultIndex >= resultCount) {
     return;
   }
 
-  const size_t row = resultIndex - firstRow;
-  const size_t visibleRows = resultListVisibleRows();
-  if (row >= visibleRows) {
+  const int rowHeight = resultListRowHeight(resultIndex);
+  if (y + rowHeight > contentBottom()) {
     return;
   }
 
   auto& display = M5Cardputer.Display;
   constexpr int pad = 5;
-  const int y = contentTop() + row * kResultRowHeight;
   const bool selected = resultIndex == selectedResult;
   const uint16_t background = selected ? TFT_DARKGREY : TFT_BLACK;
   const uint16_t foreground = selected ? TFT_YELLOW : TFT_GREEN;
   const String& line = resultPreviewLines[resultIndex];
 
   static LGFX_Sprite rowSprite(&display);
-  if (rowSprite.getBuffer() == nullptr) {
+  if (rowSprite.getBuffer() == nullptr || rowSprite.width() != display.width() ||
+      rowSprite.height() != rowHeight) {
+    rowSprite.deleteSprite();
     rowSprite.setColorDepth(16);
-    rowSprite.createSprite(display.width(), kResultRowHeight);
+    rowSprite.createSprite(display.width(), rowHeight);
   }
   if (rowSprite.getBuffer() != nullptr) {
     rowSprite.setFont(&fonts::efontJA_16);
     rowSprite.setTextDatum(top_left);
     rowSprite.fillSprite(background);
     rowSprite.setTextColor(foreground, background);
-    rowSprite.drawString(line, pad, 1);
+    if (selected) {
+      rowSprite.drawString(resultTermReadingLine(results[resultIndex]), pad, 1);
+      rowSprite.drawString(parseDefinition(results[resultIndex].definition).glosses,
+                           pad, 20);
+    } else {
+      rowSprite.drawString(line, pad, 1);
+    }
     rowSprite.pushSprite(0, y);
     return;
   }
 
   display.setFont(&fonts::efontJA_16);
   display.setTextDatum(top_left);
-  display.fillRect(0, y, display.width(), kResultRowHeight, background);
+  display.fillRect(0, y, display.width(), rowHeight, background);
   display.setTextColor(foreground, background);
-  display.drawString(line, pad, y + 1);
+  if (selected) {
+    display.drawString(resultTermReadingLine(results[resultIndex]), pad, y + 1);
+    display.drawString(parseDefinition(results[resultIndex].definition).glosses,
+                       pad, y + 20);
+  } else {
+    display.drawString(line, pad, y + 1);
+  }
 }
 
 void redrawResultSelection(size_t oldSelected, size_t newSelected) {
-  const size_t firstRow = firstVisibleResultFor(newSelected);
-  drawResultListRow(oldSelected, firstRow);
-  drawResultListRow(newSelected, firstRow);
+  (void)oldSelected;
+  (void)newSelected;
+  drawResults();
 }
 
 int maxDefinitionScrollLine() {
@@ -1775,10 +1809,15 @@ void drawResults() {
     return;
   }
 
-  const size_t visibleRows = resultListVisibleRows();
   const size_t firstRow = firstVisibleResultFor(selectedResult);
-  for (size_t row = 0; row < visibleRows && firstRow + row < resultCount; ++row) {
-    drawResultListRow(firstRow + row, firstRow);
+  int rowY = top;
+  for (size_t resultIndex = firstRow; resultIndex < resultCount; ++resultIndex) {
+    const int rowHeight = resultListRowHeight(resultIndex);
+    if (rowY + rowHeight > bottom) {
+      break;
+    }
+    drawResultListRow(resultIndex, rowY);
+    rowY += rowHeight;
   }
 }
 
