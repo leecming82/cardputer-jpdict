@@ -22,6 +22,7 @@ constexpr const char* kDictionaryPaths[] = {
 
 constexpr size_t kMaxResults = 12;
 constexpr size_t kMaxNormalResults = 6;
+constexpr size_t kSearchHistorySize = 8;
 constexpr size_t kMaxKanjiCandidates = 64;
 constexpr size_t kVisibleKanjiCandidates = 24;
 constexpr size_t kKanjiGridColumns = 6;
@@ -46,6 +47,9 @@ size_t resultCount = 0;
 JapaneseDictionary dictionary;
 JapaneseDictionaryMatch results[kMaxResults];
 String resultPreviewLines[kMaxResults];
+String searchHistory[kSearchHistorySize];
+size_t searchHistoryCount = 0;
+int searchHistoryIndex = -1;
 KanjiIndex kanjiIndex;
 String kanjiCandidates[kMaxKanjiCandidates];
 size_t selectedKanjiCandidate = 0;
@@ -102,6 +106,7 @@ constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
 
 String currentInputText();
+void clearSearchResults();
 void removeLastUtf8Char(String& text);
 int previousUtf8CharStart(const String& text, int pos);
 int nextUtf8CharEnd(const String& text, int pos);
@@ -506,6 +511,71 @@ String currentInputText() {
     return "";
   }
   return committedKana + pendingRomaji;
+}
+
+void resetSearchHistoryRecall() {
+  searchHistoryIndex = -1;
+}
+
+void rememberSearch(const String& query) {
+  if (query.length() == 0) {
+    return;
+  }
+
+  size_t existing = searchHistoryCount;
+  for (size_t i = 0; i < searchHistoryCount; ++i) {
+    if (searchHistory[i] == query) {
+      existing = i;
+      break;
+    }
+  }
+
+  if (existing < searchHistoryCount) {
+    for (size_t i = existing; i + 1 < searchHistoryCount; ++i) {
+      searchHistory[i] = searchHistory[i + 1];
+    }
+    --searchHistoryCount;
+  }
+
+  const size_t limit = searchHistoryCount < kSearchHistorySize - 1
+                           ? searchHistoryCount
+                           : kSearchHistorySize - 1;
+  for (size_t i = limit; i > 0; --i) {
+    searchHistory[i] = searchHistory[i - 1];
+  }
+  searchHistory[0] = query;
+  searchHistoryCount = searchHistoryCount < kSearchHistorySize
+                           ? searchHistoryCount + 1
+                           : kSearchHistorySize;
+}
+
+bool canRecallSearchHistory() {
+  return viewMode == ViewMode::Results && !searched && searchHistoryCount > 0 &&
+         pendingRomaji.length() == 0 &&
+         (committedKana.length() == 0 || searchHistoryIndex >= 0);
+}
+
+bool recallSearchHistory(int direction) {
+  if (!canRecallSearchHistory()) {
+    return false;
+  }
+
+  if (searchHistoryIndex < 0) {
+    searchHistoryIndex = direction < 0 ? 0 : searchHistoryCount - 1;
+  } else if (direction < 0) {
+    searchHistoryIndex =
+        (searchHistoryIndex + 1) % static_cast<int>(searchHistoryCount);
+  } else {
+    searchHistoryIndex =
+        (searchHistoryIndex + static_cast<int>(searchHistoryCount) - 1) %
+        static_cast<int>(searchHistoryCount);
+  }
+
+  committedKana = searchHistory[searchHistoryIndex];
+  pendingRomaji = "";
+  clearSearchResults();
+  dirty = true;
+  return true;
 }
 
 void clearSearchResults() {
@@ -1316,6 +1386,10 @@ void runSearch() {
       segmentedSearch = resultCount > 0;
     }
   }
+  if (resultCount > 0) {
+    rememberSearch(lastSearchedKana);
+  }
+  resetSearchHistoryRecall();
   rebuildResultPreviewLines();
 
   Serial.printf("search kana='%s' results=%u segmented=%u\n",
@@ -1407,6 +1481,10 @@ void selectNextResult() {
 }
 
 void selectUp() {
+  if (recallSearchHistory(-1)) {
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiSpanPicker) {
     selectPreviousResult();
     return;
@@ -1423,6 +1501,10 @@ void selectUp() {
 }
 
 void selectDown() {
+  if (recallSearchHistory(1)) {
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiSpanPicker) {
     selectNextResult();
     return;
@@ -1441,6 +1523,7 @@ void selectDown() {
 void clearQuery() {
   committedKana = "";
   pendingRomaji = "";
+  resetSearchHistoryRecall();
   clearSearchResults();
   dirty = true;
 }
@@ -1501,6 +1584,7 @@ void insertSelectedKanji() {
   updated += kanjiCandidates[selectedKanjiCandidate];
   updated += committedKana.substring(kanjiReplaceStart + kanjiReplaceLength);
   committedKana = updated;
+  resetSearchHistoryRecall();
   clearSearchResults();
   viewMode = ViewMode::Results;
   dirty = true;
@@ -1514,6 +1598,7 @@ void appendChar(char ch) {
     ch = static_cast<char>(ch - 'A' + 'a');
   }
   if ((ch >= 'a' && ch <= 'z') || ch == '-' || ch == '\'') {
+    resetSearchHistoryRecall();
     pendingRomaji += ch;
     composePending(false);
     clearSearchResults();
@@ -1529,6 +1614,7 @@ void deleteChar() {
   } else {
     return;
   }
+  resetSearchHistoryRecall();
   clearSearchResults();
   dirty = true;
 }
