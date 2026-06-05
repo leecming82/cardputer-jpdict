@@ -820,6 +820,32 @@ bool isKanaCodepoint(uint32_t cp) {
   return (cp >= 0x3041 && cp <= 0x3096) || cp == 0x30FC;
 }
 
+bool isPreviewKanaCodepoint(uint32_t cp) {
+  return (cp >= 0x3041 && cp <= 0x3096) ||
+         (cp >= 0x309D && cp <= 0x309F) ||
+         (cp >= 0x30A1 && cp <= 0x30FA) ||
+         (cp >= 0x30FD && cp <= 0x30FF) || cp == 0x30FC;
+}
+
+bool isAllPreviewKana(const String& text) {
+  if (text.length() == 0) {
+    return false;
+  }
+
+  int pos = 0;
+  while (pos < static_cast<int>(text.length())) {
+    if (!isPreviewKanaCodepoint(utf8CodepointAt(text, pos))) {
+      return false;
+    }
+    pos = nextUtf8CharEnd(text, pos);
+  }
+  return true;
+}
+
+bool shouldShowPreviewReading(const JapaneseDictionaryMatch& result) {
+  return !(result.term == result.reading && isAllPreviewKana(result.term));
+}
+
 String trailingKanaSegment() {
   int start = committedKana.length();
   while (start > 0) {
@@ -1275,8 +1301,10 @@ ParsedDefinition parseDefinition(const String& rawDefinition) {
 
 String compactResultLine(const JapaneseDictionaryMatch& result) {
   String line = result.term;
-  line += " ";
-  line += result.reading;
+  if (shouldShowPreviewReading(result)) {
+    line += " ";
+    line += result.reading;
+  }
   line += " ";
   line += parseDefinition(result.definition).glosses;
   return line;
