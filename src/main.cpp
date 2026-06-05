@@ -20,7 +20,8 @@ constexpr const char* kDictionaryPaths[] = {
     "/dict/jitendex-cpdict-modern",
 };
 
-constexpr size_t kMaxResults = 6;
+constexpr size_t kMaxResults = 12;
+constexpr size_t kMaxNormalResults = 6;
 constexpr size_t kMaxKanjiCandidates = 64;
 constexpr size_t kVisibleKanjiCandidates = 24;
 constexpr size_t kKanjiGridColumns = 6;
@@ -59,6 +60,7 @@ bool searched = false;
 bool dirty = true;
 bool marqueeActive = false;
 bool helpVisible = false;
+bool segmentedSearch = false;
 uint32_t lastMarqueeFrame = 0;
 uint32_t lastInputAt = 0;
 bool backlightDimmed = false;
@@ -505,6 +507,7 @@ String currentInputText() {
 
 void clearSearchResults() {
   searched = false;
+  segmentedSearch = false;
   resultCount = 0;
   selectedResult = 0;
   definitionScrollLine = 0;
@@ -600,6 +603,93 @@ int nextUtf8CharEnd(const String& text, int pos) {
     ++next;
   }
   return next;
+}
+
+size_t utf8CharStarts(const String& text, int* starts, size_t maxStarts) {
+  if (starts == nullptr || maxStarts == 0) {
+    return 0;
+  }
+
+  size_t count = 0;
+  int pos = 0;
+  while (pos < static_cast<int>(text.length()) && count + 1 < maxStarts) {
+    starts[count++] = pos;
+    pos = nextUtf8CharEnd(text, pos);
+  }
+  starts[count] = text.length();
+  return count;
+}
+
+size_t lookupSegmentedExact(const String& query,
+                            JapaneseDictionaryMatch* outMatches,
+                            size_t maxMatches) {
+  if (!dictionary.isOpen() || query.length() == 0 || outMatches == nullptr ||
+      maxMatches < 2) {
+    return 0;
+  }
+
+  int starts[kMaxQueryChars + 1] = {};
+  const size_t charCount = utf8CharStarts(query, starts, kMaxQueryChars + 1);
+  if (charCount < 4) {
+    return 0;
+  }
+
+  String segments[kMaxResults];
+  size_t segmentCount = 0;
+  size_t charPos = 0;
+  while (charPos < charCount && segmentCount < maxMatches) {
+    bool matched = false;
+    const size_t remaining = charCount - charPos;
+    if (remaining < 2) {
+      return 0;
+    }
+
+    for (size_t segmentChars = remaining; segmentChars >= 2; --segmentChars) {
+      const int start = starts[charPos];
+      const int end = starts[charPos + segmentChars];
+      const String segment = query.substring(start, end);
+
+      JapaneseDictionaryMatch match;
+      if (dictionary.lookupExact(segment, &match, 1) > 0) {
+        segments[segmentCount++] = segment;
+        charPos += segmentChars;
+        matched = true;
+        break;
+      }
+      if (segmentChars == 2) {
+        break;
+      }
+    }
+
+    if (!matched) {
+      return 0;
+    }
+  }
+
+  if (segmentCount < 2 || charPos != charCount) {
+    return 0;
+  }
+
+  size_t found = 0;
+  for (size_t segmentIndex = 0;
+       segmentIndex < segmentCount && found < maxMatches; ++segmentIndex) {
+    const size_t remainingSegments = segmentCount - segmentIndex - 1;
+    const size_t available = maxMatches - found;
+    if (available <= remainingSegments) {
+      return 0;
+    }
+
+    const size_t segmentLimit = available - remainingSegments;
+    const size_t segmentFound =
+        dictionary.lookupExact(segments[segmentIndex], outMatches + found,
+                               segmentLimit);
+    if (segmentFound == 0) {
+      return 0;
+    }
+    found += segmentFound;
+  }
+
+  return found >= segmentCount ? found : 0;
 }
 
 int trailingKanaSegmentStart() {
@@ -1022,17 +1112,25 @@ void runSearch() {
   definitionScrollLine = 0;
   viewMode = ViewMode::Results;
   searched = true;
+  segmentedSearch = false;
 
   if (committedKana.length() == 0 || !dictionary.isOpen()) {
     resultCount = 0;
   } else {
     resultCount =
-        dictionary.lookupExactThenPrefix(lastSearchedKana, results, kMaxResults);
+        dictionary.lookupExactThenPrefix(lastSearchedKana, results,
+                                         kMaxNormalResults);
+    if (resultCount == 0) {
+      resultCount =
+          lookupSegmentedExact(lastSearchedKana, results, kMaxResults);
+      segmentedSearch = resultCount > 0;
+    }
   }
   rebuildResultPreviewLines();
 
-  Serial.printf("search kana='%s' results=%u\n", lastSearchedKana.c_str(),
-                static_cast<unsigned>(resultCount));
+  Serial.printf("search kana='%s' results=%u segmented=%u\n",
+                lastSearchedKana.c_str(), static_cast<unsigned>(resultCount),
+                segmentedSearch);
   dirty = true;
 }
 
