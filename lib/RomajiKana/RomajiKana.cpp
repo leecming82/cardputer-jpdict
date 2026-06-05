@@ -107,6 +107,12 @@ RomajiComposition composeRomaji(const std::string& input, bool final) {
     const char ch = text[i];
     const char next = i + 1 < text.size() ? text[i + 1] : '\0';
 
+    if (ch == '-') {
+      composed.committed += "ー";
+      ++i;
+      continue;
+    }
+
     if (isAsciiConsonant(ch) && ch != 'n' && ch == next) {
       composed.committed += "っ";
       ++i;

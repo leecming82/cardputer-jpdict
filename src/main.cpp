@@ -102,6 +102,7 @@ constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
 
 String currentInputText();
+int nextUtf8CharEnd(const String& text, int pos);
 
 bool usesLargeSearchHeader() {
   return viewMode == ViewMode::Results && !searched &&
@@ -559,6 +560,41 @@ uint32_t utf8CodepointAt(const String& text, int pos) {
            ((data[2] & 0x3F) << 6) | (data[3] & 0x3F);
   }
   return 0;
+}
+
+void appendUtf8(String& out, uint32_t cp) {
+  if (cp <= 0x7F) {
+    out += static_cast<char>(cp);
+  } else if (cp <= 0x7FF) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp <= 0xFFFF) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+}
+
+String hiraganaToKatakana(const String& text) {
+  String out;
+  out.reserve(text.length());
+  int pos = 0;
+  while (pos < static_cast<int>(text.length())) {
+    uint32_t cp = utf8CodepointAt(text, pos);
+    if (cp >= 0x3041 && cp <= 0x3096) {
+      cp += 0x60;
+    } else if (cp == '-') {
+      cp = 0x30FC;
+    }
+    appendUtf8(out, cp);
+    pos = nextUtf8CharEnd(text, pos);
+  }
+  return out;
 }
 
 bool isKanaCodepoint(uint32_t cp) {
@@ -1145,6 +1181,14 @@ void runSearch() {
     resultCount =
         dictionary.lookupExactThenPrefix(lastSearchedKana, results,
                                          kMaxNormalResults);
+    if (resultCount == 0) {
+      const String katakanaQuery = hiraganaToKatakana(lastSearchedKana);
+      if (katakanaQuery != lastSearchedKana) {
+        resultCount =
+            dictionary.lookupExactThenPrefix(katakanaQuery, results,
+                                             kMaxNormalResults);
+      }
+    }
     if (resultCount == 0) {
       resultCount =
           lookupSegmentedExact(lastSearchedKana, results, kMaxResults);
