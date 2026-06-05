@@ -102,6 +102,8 @@ constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
 
 String currentInputText();
+void removeLastUtf8Char(String& text);
+int previousUtf8CharStart(const String& text, int pos);
 int nextUtf8CharEnd(const String& text, int pos);
 
 bool usesLargeSearchHeader() {
@@ -268,7 +270,7 @@ String ellipsize(const String &text, int maxWidth) {
 
   String out = text;
   while (out.length() > 0 && textWidth(out + "...") > maxWidth) {
-    out.remove(out.length() - 1);
+    removeLastUtf8Char(out);
   }
   return out + "...";
 }
@@ -597,6 +599,99 @@ String hiraganaToKatakana(const String& text) {
   return out;
 }
 
+int32_t sequenceGroupId(int32_t sequence) {
+  return sequence < 0 ? -sequence : sequence;
+}
+
+bool hasTermVariant(const String& terms, const String& term) {
+  int start = 0;
+  while (start <= static_cast<int>(terms.length())) {
+    int end = terms.indexOf("・", start);
+    if (end < 0) {
+      end = terms.length();
+    }
+    if (terms.substring(start, end) == term) {
+      return true;
+    }
+    if (end >= static_cast<int>(terms.length())) {
+      break;
+    }
+    start = end + strlen("・");
+  }
+  return false;
+}
+
+void appendTermVariant(JapaneseDictionaryMatch& match, const String& term) {
+  if (term.length() == 0 || hasTermVariant(match.terms, term)) {
+    return;
+  }
+  if (match.terms.length() > 0) {
+    match.terms += "・";
+  }
+  match.terms += term;
+  if (match.termCount < UINT8_MAX) {
+    ++match.termCount;
+  }
+}
+
+bool mergeSearchResult(JapaneseDictionaryMatch* matches, size_t count,
+                       const JapaneseDictionaryMatch& candidate) {
+  const int32_t candidateGroup = sequenceGroupId(candidate.sequence);
+  for (size_t i = 0; i < count; ++i) {
+    if (sequenceGroupId(matches[i].sequence) == candidateGroup &&
+        matches[i].reading == candidate.reading &&
+        matches[i].definition == candidate.definition) {
+      appendTermVariant(matches[i], candidate.term);
+      return true;
+    }
+  }
+  return false;
+}
+
+size_t appendSearchResults(JapaneseDictionaryMatch* outMatches, size_t found,
+                           size_t maxMatches,
+                           const JapaneseDictionaryMatch* candidates,
+                           size_t candidateCount) {
+  if (outMatches == nullptr || candidates == nullptr) {
+    return found;
+  }
+  for (size_t i = 0; i < candidateCount && found < maxMatches; ++i) {
+    if (!mergeSearchResult(outMatches, found, candidates[i])) {
+      outMatches[found++] = candidates[i];
+    }
+  }
+  return found;
+}
+
+bool rankedBefore(const JapaneseDictionaryMatch& a,
+                  const JapaneseDictionaryMatch& b) {
+  if (a.tier != b.tier) {
+    return a.tier < b.tier;
+  }
+  if (a.score != b.score) {
+    return a.score > b.score;
+  }
+  if (a.deinflectionDepth != b.deinflectionDepth) {
+    return a.deinflectionDepth < b.deinflectionDepth;
+  }
+  if (a.flags != b.flags) {
+    return a.flags < b.flags;
+  }
+  return a.term < b.term;
+}
+
+void sortSearchResults(JapaneseDictionaryMatch* matches, size_t count) {
+  for (size_t i = 1; i < count; ++i) {
+    JapaneseDictionaryMatch value = matches[i];
+    size_t j = i;
+    while (j > 0 && rankedBefore(value, matches[j - 1])) {
+      matches[j] = matches[j - 1];
+      --j;
+    }
+    matches[j] = value;
+  }
+}
+
 bool isKanaCodepoint(uint32_t cp) {
   return (cp >= 0x3041 && cp <= 0x3096) || cp == 0x30FC;
 }
@@ -774,8 +869,10 @@ int drawWrappedText(int x, int y, int width, int maxHeight, const String &text,
     String line;
     String word;
     while (pos < static_cast<int>(text.length())) {
-      const char ch = text[pos++];
-      if (ch == ' ') {
+      const int charStart = pos;
+      pos = nextUtf8CharEnd(text, pos);
+      const String ch = text.substring(charStart, pos);
+      if (ch == " ") {
         if (word.length() > 0) {
           const String candidate = line.length() > 0 ? line + " " + word : word;
           if (textWidth(candidate) > width && line.length() > 0) {
@@ -791,8 +888,8 @@ int drawWrappedText(int x, int y, int width, int maxHeight, const String &text,
 
       if (textWidth(word) > width && line.length() == 0) {
         while (word.length() > 0 && textWidth(word) > width) {
-          word.remove(word.length() - 1);
-          --pos;
+          removeLastUtf8Char(word);
+          pos = previousUtf8CharStart(text, pos);
         }
         line = word;
         word = "";
@@ -839,8 +936,10 @@ int countWrappedLines(int width, const String &text, bool largeText = false) {
     String line;
     String word;
     while (pos < static_cast<int>(text.length())) {
-      const char ch = text[pos++];
-      if (ch == ' ') {
+      const int charStart = pos;
+      pos = nextUtf8CharEnd(text, pos);
+      const String ch = text.substring(charStart, pos);
+      if (ch == " ") {
         if (word.length() > 0) {
           const String candidate = line.length() > 0 ? line + " " + word : word;
           if (textWidth(candidate) > width && line.length() > 0) {
@@ -856,8 +955,8 @@ int countWrappedLines(int width, const String &text, bool largeText = false) {
 
       if (textWidth(word) > width && line.length() == 0) {
         while (word.length() > 0 && textWidth(word) > width) {
-          word.remove(word.length() - 1);
-          --pos;
+          removeLastUtf8Char(word);
+          pos = previousUtf8CharStart(text, pos);
         }
         line = word;
         word = "";
@@ -1178,16 +1277,38 @@ void runSearch() {
   if (committedKana.length() == 0 || !dictionary.isOpen()) {
     resultCount = 0;
   } else {
-    resultCount =
-        dictionary.lookupExactThenPrefix(lastSearchedKana, results,
-                                         kMaxNormalResults);
-    if (resultCount == 0) {
-      const String katakanaQuery = hiraganaToKatakana(lastSearchedKana);
-      if (katakanaQuery != lastSearchedKana) {
-        resultCount =
-            dictionary.lookupExactThenPrefix(katakanaQuery, results,
-                                             kMaxNormalResults);
-      }
+    JapaneseDictionaryMatch staged[kMaxResults];
+    const String katakanaQuery = hiraganaToKatakana(lastSearchedKana);
+
+    resultCount = 0;
+    size_t stagedCount =
+        dictionary.lookupExact(lastSearchedKana, staged, kMaxNormalResults);
+    resultCount = appendSearchResults(results, resultCount, kMaxResults,
+                                      staged, stagedCount);
+    if (katakanaQuery != lastSearchedKana) {
+      stagedCount = dictionary.lookupExact(katakanaQuery, staged, kMaxResults);
+      resultCount = appendSearchResults(results, resultCount, kMaxResults,
+                                        staged, stagedCount);
+    }
+    sortSearchResults(results, resultCount);
+    if (resultCount > kMaxNormalResults) {
+      resultCount = kMaxNormalResults;
+    }
+
+    if (resultCount < kMaxNormalResults) {
+      stagedCount = dictionary.lookupExactThenPrefix(lastSearchedKana, staged,
+                                                     kMaxResults);
+      resultCount = appendSearchResults(results, resultCount,
+                                        kMaxNormalResults, staged,
+                                        stagedCount);
+    }
+    if (resultCount < kMaxNormalResults &&
+        katakanaQuery != lastSearchedKana) {
+      stagedCount = dictionary.lookupExactThenPrefix(katakanaQuery, staged,
+                                                     kMaxResults);
+      resultCount = appendSearchResults(results, resultCount,
+                                        kMaxNormalResults, staged,
+                                        stagedCount);
     }
     if (resultCount == 0) {
       resultCount =
