@@ -79,6 +79,12 @@ The device expects these files under `/jpdict` on the microSD card:
 - `buckets.bin`
 - `records.bin`
 - `strings.bin`
+- `key_filter.bin`
+
+`key_filter.bin` is a generated Bloom filter used to skip dictionary lookups
+for keys that definitely do not exist, which speeds up misses and fallback
+search paths. Lookup remains functional if the file is absent or cannot be
+loaded; the firmware simply falls back to probing the main dictionary index.
 
 ## Kanji Reading Index
 

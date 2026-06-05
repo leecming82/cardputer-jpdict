@@ -12,6 +12,8 @@ UNICODE_BUCKETS = 0x110000
 KEY_BYTES = 96
 BUCKET_STRUCT = struct.Struct("<II")
 RECORD_STRUCT = struct.Struct("<96sHBBIHIHIIii")
+BLOOM_FILTER_BYTES = 128 * 1024
+BLOOM_HASHES = 2
 
 TIER_COMMON = 0
 TIER_MODERN = 1
@@ -82,6 +84,37 @@ def safe_prefix_bytes(text, limit):
     while cut > 0 and (data[cut] & 0xC0) == 0x80:
         cut -= 1
     return data[:cut]
+
+
+def fnv1a32(data, seed=0x811C9DC5):
+    value = seed
+    for byte in data:
+        value ^= byte
+        value = (value * 0x01000193) & 0xFFFFFFFF
+    return value
+
+
+def bloom_positions(data, bit_count):
+    h1 = fnv1a32(data)
+    h2 = fnv1a32(data, 0xCBF29CE4) | 1
+    for i in range(BLOOM_HASHES):
+        yield (h1 + i * h2) % bit_count
+
+
+def write_key_filter(entries, path):
+    bit_count = BLOOM_FILTER_BYTES * 8
+    bits = bytearray(BLOOM_FILTER_BYTES)
+    unique_keys = set()
+    for entry in entries:
+        key = safe_prefix_bytes(entry["key"], KEY_BYTES)
+        if not key:
+            continue
+        unique_keys.add(key)
+        for pos in bloom_positions(key, bit_count):
+            bits[pos >> 3] |= 1 << (pos & 7)
+    with open(path, "wb") as f:
+        f.write(bits)
+    return len(unique_keys)
 
 
 def text_content_from_content_kind(node, wanted_content_kind, out):
@@ -391,6 +424,8 @@ def convert(args):
     for cp, start in bucket_start.items():
         buckets[cp] = (start, bucket_count[cp])
 
+    key_filter_keys = write_key_filter(entries, os.path.join(args.out_dir, "key_filter.bin"))
+
     with open(os.path.join(args.out_dir, "buckets.bin"), "wb") as f:
         for start, count in buckets:
             f.write(BUCKET_STRUCT.pack(start, count))
@@ -442,6 +477,13 @@ def convert(args):
         "record_size": RECORD_STRUCT.size,
         "key_bytes": KEY_BYTES,
         "unicode_buckets": UNICODE_BUCKETS,
+        "key_filter": {
+            "file": "key_filter.bin",
+            "bytes": BLOOM_FILTER_BYTES,
+            "hashes": BLOOM_HASHES,
+            "keys": key_filter_keys,
+            "hash": "fnv1a32-double",
+        },
         "default_install_path": "/jpdict",
         "record_fields": [
             "key_prefix",
@@ -479,7 +521,7 @@ def convert(args):
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     print(f"wrote {len(entries)} lookup records to {args.out_dir}")
-    for name in ("manifest.json", "buckets.bin", "records.bin", "strings.bin"):
+    for name in ("manifest.json", "buckets.bin", "records.bin", "strings.bin", "key_filter.bin"):
         path = os.path.join(args.out_dir, name)
         print(f"{name}: {os.path.getsize(path):,} bytes")
 

@@ -24,18 +24,30 @@ class JapaneseDictionary {
   void close();
   bool isOpen() const;
   const String& path() const;
+  bool hasExact(const String& key);
   size_t lookupExact(const String& key, JapaneseDictionaryMatch* outMatches,
                      size_t maxMatches);
   size_t lookupExactThenPrefix(const String& key,
                                JapaneseDictionaryMatch* outMatches,
                                size_t maxMatches,
                                size_t maxPrefixRecords = 48);
+  size_t lookupDeinflected(const String& key,
+                           JapaneseDictionaryMatch* outMatches,
+                           size_t maxMatches);
+  size_t lookupDeinflectedThenPrefix(const String& key,
+                                     JapaneseDictionaryMatch* outMatches,
+                                     size_t maxMatches,
+                                     size_t maxPrefixRecords = 48);
+  size_t lookupPrefix(const String& key, JapaneseDictionaryMatch* outMatches,
+                      size_t maxMatches, size_t maxPrefixRecords = 48);
 
  private:
   static constexpr uint32_t kUnicodeBuckets = 0x110000;
   static constexpr size_t kBucketBytes = 8;
   static constexpr size_t kKeyBytes = 96;
   static constexpr size_t kRecordBytes = 128;
+  static constexpr size_t kKeyFilterBytes = 128 * 1024;
+  static constexpr uint8_t kKeyFilterHashes = 2;
 
   struct Record {
     char key[kKeyBytes + 1] = {};
@@ -56,7 +68,12 @@ class JapaneseDictionary {
   File buckets_;
   File records_;
   File strings_;
+  uint8_t* keyFilter_ = nullptr;
+  size_t keyFilterBytes_ = 0;
 
+  bool hasKeyFilter() const;
+  bool loadKeyFilter(const char* basePath);
+  bool keyMightExist(const String& key) const;
   bool readBucket(uint32_t codepoint, uint32_t& start, uint32_t& count);
   bool readRecord(uint32_t index, Record& record);
   bool lowerBoundInBucket(const String& key, uint32_t& bucketStart,
@@ -68,6 +85,13 @@ class JapaneseDictionary {
                             uint8_t deinflectionDepth,
                             JapaneseDictionaryMatch* outMatches, size_t found,
                             size_t maxMatches);
+  size_t appendDeinflectedMatches(const String& key,
+                                  JapaneseDictionaryMatch* outMatches,
+                                  size_t found, size_t maxMatches,
+                                  uint8_t minDepth, uint8_t maxDepth);
+  size_t appendPrefixMatches(const String& key,
+                             JapaneseDictionaryMatch* outMatches, size_t found,
+                             size_t maxMatches, size_t maxPrefixRecords);
   String readString(uint32_t offset, uint32_t length);
 };
 

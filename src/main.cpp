@@ -762,6 +762,35 @@ void sortSearchResults(JapaneseDictionaryMatch* matches, size_t count) {
   }
 }
 
+bool hasLikelyInflectionEnding(const String& query) {
+  static constexpr const char* kEndings[] = {
+      "ました", "ません", "ましたら", "ませんでした", "なかった", "かった",
+      "くない", "くて",   "ければ",   "れば",         "られる",   "れる",
+      "せる",   "させる", "ない",     "ます",         "たい",     "た",
+      "て",     "だ",     "で",       "ば",           "ぬ",
+  };
+  for (const char* ending : kEndings) {
+    if (query.endsWith(ending) && query.length() > strlen(ending)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+size_t remainingSearchCapacity(size_t found) {
+  return found < kMaxNormalResults ? kMaxNormalResults - found : 0;
+}
+
+size_t stagedSearchLimit(size_t found) {
+  constexpr size_t kMergeSlack = 2;
+  const size_t remaining = remainingSearchCapacity(found);
+  if (remaining == 0) {
+    return 0;
+  }
+  const size_t limit = remaining + kMergeSlack;
+  return limit < kMaxResults ? limit : kMaxResults;
+}
+
 bool isKanaCodepoint(uint32_t cp) {
   return (cp >= 0x3041 && cp <= 0x3096) || cp == 0x30FC;
 }
@@ -850,8 +879,7 @@ size_t lookupSegmentedExact(const String& query,
       const int end = starts[charPos + segmentChars];
       const String segment = query.substring(start, end);
 
-      JapaneseDictionaryMatch match;
-      if (dictionary.lookupExact(segment, &match, 1) > 0) {
+      if (dictionary.hasExact(segment)) {
         segments[segmentCount++] = segment;
         charPos += segmentChars;
         matched = true;
@@ -1349,14 +1377,20 @@ void runSearch() {
   } else {
     JapaneseDictionaryMatch staged[kMaxResults];
     const String katakanaQuery = hiraganaToKatakana(lastSearchedKana);
+    const bool likelyInflected =
+        hasLikelyInflectionEnding(lastSearchedKana);
+    const bool allowKatakanaFallback = !likelyInflected;
 
     resultCount = 0;
     size_t stagedCount =
         dictionary.lookupExact(lastSearchedKana, staged, kMaxNormalResults);
     resultCount = appendSearchResults(results, resultCount, kMaxResults,
                                       staged, stagedCount);
-    if (katakanaQuery != lastSearchedKana) {
-      stagedCount = dictionary.lookupExact(katakanaQuery, staged, kMaxResults);
+    if (allowKatakanaFallback && resultCount < kMaxNormalResults &&
+        katakanaQuery != lastSearchedKana) {
+      stagedCount =
+          dictionary.lookupExact(katakanaQuery, staged,
+                                 stagedSearchLimit(resultCount));
       resultCount = appendSearchResults(results, resultCount, kMaxResults,
                                         staged, stagedCount);
     }
@@ -1366,16 +1400,26 @@ void runSearch() {
     }
 
     if (resultCount < kMaxNormalResults) {
-      stagedCount = dictionary.lookupExactThenPrefix(lastSearchedKana, staged,
-                                                     kMaxResults);
+      stagedCount =
+          dictionary.lookupPrefix(lastSearchedKana, staged,
+                                  stagedSearchLimit(resultCount));
       resultCount = appendSearchResults(results, resultCount,
                                         kMaxNormalResults, staged,
                                         stagedCount);
     }
-    if (resultCount < kMaxNormalResults &&
+    if (allowKatakanaFallback && resultCount < kMaxNormalResults &&
         katakanaQuery != lastSearchedKana) {
-      stagedCount = dictionary.lookupExactThenPrefix(katakanaQuery, staged,
-                                                     kMaxResults);
+      stagedCount =
+          dictionary.lookupPrefix(katakanaQuery, staged,
+                                  stagedSearchLimit(resultCount));
+      resultCount = appendSearchResults(results, resultCount,
+                                        kMaxNormalResults, staged,
+                                        stagedCount);
+    }
+    if (resultCount < kMaxNormalResults && likelyInflected) {
+      stagedCount =
+          dictionary.lookupDeinflected(lastSearchedKana, staged,
+                                       stagedSearchLimit(resultCount));
       resultCount = appendSearchResults(results, resultCount,
                                         kMaxNormalResults, staged,
                                         stagedCount);

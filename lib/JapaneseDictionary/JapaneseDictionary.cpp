@@ -3,6 +3,7 @@
 #include "JapaneseDeinflector.h"
 #include <SD.h>
 #include <cstring>
+#include <new>
 
 namespace {
 
@@ -27,6 +28,16 @@ uint32_t readLe32(const uint8_t* p) {
 
 int32_t readLeI32(const uint8_t* p) {
   return static_cast<int32_t>(readLe32(p));
+}
+
+uint32_t fnv1a32(const char* data, uint32_t seed) {
+  uint32_t value = seed;
+  while (*data != '\0') {
+    value ^= static_cast<uint8_t>(*data);
+    value *= 0x01000193UL;
+    ++data;
+  }
+  return value;
 }
 
 }  // namespace
@@ -66,10 +77,14 @@ bool JapaneseDictionary::open(const char* basePath) {
     close();
     return false;
   }
+  loadKeyFilter(basePath);
   return true;
 }
 
 void JapaneseDictionary::close() {
+  delete[] keyFilter_;
+  keyFilter_ = nullptr;
+  keyFilterBytes_ = 0;
   if (buckets_) {
     buckets_.close();
   }
@@ -88,6 +103,57 @@ bool JapaneseDictionary::isOpen() const {
 
 const String& JapaneseDictionary::path() const {
   return basePath_;
+}
+
+bool JapaneseDictionary::hasKeyFilter() const {
+  return keyFilter_ != nullptr && keyFilterBytes_ > 0;
+}
+
+bool JapaneseDictionary::loadKeyFilter(const char* basePath) {
+  File filter = SD.open(joinPath(basePath, "key_filter.bin"), FILE_READ);
+  if (!filter) {
+    return false;
+  }
+  if (filter.size() != kKeyFilterBytes) {
+    filter.close();
+    return false;
+  }
+
+  uint8_t* data = new (std::nothrow) uint8_t[kKeyFilterBytes];
+  if (data == nullptr) {
+    filter.close();
+    return false;
+  }
+
+  const int read = filter.read(data, kKeyFilterBytes);
+  filter.close();
+  if (read != static_cast<int>(kKeyFilterBytes)) {
+    delete[] data;
+    return false;
+  }
+
+  keyFilter_ = data;
+  keyFilterBytes_ = kKeyFilterBytes;
+  return true;
+}
+
+bool JapaneseDictionary::keyMightExist(const String& key) const {
+  if (!hasKeyFilter() || key.length() == 0) {
+    return true;
+  }
+
+  const uint32_t bitCount = keyFilterBytes_ * 8;
+  const uint32_t h1 = fnv1a32(key.c_str(), 0x811C9DC5UL);
+  const uint32_t h2 = fnv1a32(key.c_str(), 0xCBF29CE4UL) | 1UL;
+  for (uint8_t i = 0; i < kKeyFilterHashes; ++i) {
+    const uint32_t pos =
+        (static_cast<uint64_t>(h1) + static_cast<uint64_t>(i) * h2) %
+        bitCount;
+    if ((keyFilter_[pos >> 3] & (1U << (pos & 7))) == 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool JapaneseDictionary::readBucket(uint32_t codepoint, uint32_t& start,
@@ -270,6 +336,9 @@ size_t JapaneseDictionary::appendExactMatches(
   if (!isOpen() || key.length() == 0 || outMatches == nullptr) {
     return found;
   }
+  if (!keyMightExist(key)) {
+    return found;
+  }
 
   uint32_t start = 0;
   uint32_t count = 0;
@@ -307,27 +376,55 @@ size_t JapaneseDictionary::lookupExact(const String& key,
   return appendExactMatches(key, key, 0, outMatches, 0, maxMatches);
 }
 
-size_t JapaneseDictionary::lookupExactThenPrefix(const String& key,
-                                                 JapaneseDictionaryMatch* outMatches,
-                                                 size_t maxMatches,
-                                                 size_t maxPrefixRecords) {
-  size_t found = appendExactMatches(key, key, 0, outMatches, 0, maxMatches);
+bool JapaneseDictionary::hasExact(const String& key) {
+  if (!isOpen() || key.length() == 0) {
+    return false;
+  }
+  if (!keyMightExist(key)) {
+    return false;
+  }
+
+  uint32_t start = 0;
+  uint32_t count = 0;
+  uint32_t lo = 0;
+  if (!lowerBoundInBucket(key, start, count, lo) || lo >= start + count) {
+    return false;
+  }
+
+  Record record;
+  return readRecord(lo, record) && strcmp(record.key, key.c_str()) == 0;
+}
+
+size_t JapaneseDictionary::appendDeinflectedMatches(
+    const String& key, JapaneseDictionaryMatch* outMatches, size_t found,
+    size_t maxMatches, uint8_t minDepth, uint8_t maxDepth) {
   if (!isOpen() || key.length() == 0 || outMatches == nullptr ||
-      found >= maxMatches || maxPrefixRecords == 0) {
+      found >= maxMatches || minDepth > maxDepth) {
     return found;
   }
 
   const auto candidates =
-      jpdict::expandDeinflections(key.c_str(), 3, maxMatches * 4 + 8);
+      jpdict::expandDeinflections(key.c_str(), maxDepth, maxMatches * 4 + 8);
   for (const auto& candidate : candidates) {
     if (found >= maxMatches) {
       return found;
     }
-    if (candidate.depth == 0 || candidate.term == key.c_str()) {
+    if (candidate.depth < minDepth || candidate.depth > maxDepth ||
+        candidate.term == key.c_str()) {
       continue;
     }
     found = appendExactMatches(candidate.term.c_str(), key,
                                candidate.depth, outMatches, found, maxMatches);
+  }
+  return found;
+}
+
+size_t JapaneseDictionary::appendPrefixMatches(
+    const String& key, JapaneseDictionaryMatch* outMatches, size_t found,
+    size_t maxMatches, size_t maxPrefixRecords) {
+  if (!isOpen() || key.length() == 0 || outMatches == nullptr ||
+      found >= maxMatches || maxPrefixRecords == 0) {
+    return found;
   }
 
   uint32_t start = 0;
@@ -361,4 +458,48 @@ size_t JapaneseDictionary::lookupExactThenPrefix(const String& key,
   }
 
   return found;
+}
+
+size_t JapaneseDictionary::lookupExactThenPrefix(
+    const String& key, JapaneseDictionaryMatch* outMatches, size_t maxMatches,
+    size_t maxPrefixRecords) {
+  size_t found = appendExactMatches(key, key, 0, outMatches, 0, maxMatches);
+  found = appendDeinflectedMatches(key, outMatches, found, maxMatches, 1, 1);
+  if (found < maxMatches) {
+    found = appendDeinflectedMatches(key, outMatches, found, maxMatches, 2, 2);
+  }
+  return appendPrefixMatches(key, outMatches, found, maxMatches,
+                             maxPrefixRecords);
+}
+
+size_t JapaneseDictionary::lookupDeinflected(const String& key,
+                                             JapaneseDictionaryMatch* outMatches,
+                                             size_t maxMatches) {
+  size_t found =
+      appendDeinflectedMatches(key, outMatches, 0, maxMatches, 1, 1);
+  if (found == 0) {
+    found =
+        appendDeinflectedMatches(key, outMatches, found, maxMatches, 2, 2);
+  }
+  return found;
+}
+
+size_t JapaneseDictionary::lookupDeinflectedThenPrefix(
+    const String& key, JapaneseDictionaryMatch* outMatches, size_t maxMatches,
+    size_t maxPrefixRecords) {
+  size_t found =
+      appendDeinflectedMatches(key, outMatches, 0, maxMatches, 1, 1);
+  if (found == 0) {
+    found =
+        appendDeinflectedMatches(key, outMatches, found, maxMatches, 2, 2);
+  }
+  return appendPrefixMatches(key, outMatches, found, maxMatches,
+                             maxPrefixRecords);
+}
+
+size_t JapaneseDictionary::lookupPrefix(const String& key,
+                                        JapaneseDictionaryMatch* outMatches,
+                                        size_t maxMatches,
+                                        size_t maxPrefixRecords) {
+  return appendPrefixMatches(key, outMatches, 0, maxMatches, maxPrefixRecords);
 }
