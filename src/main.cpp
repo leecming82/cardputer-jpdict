@@ -33,11 +33,13 @@ constexpr uint32_t kMarqueeMsPerPixel = 95;
 constexpr uint32_t kMarqueeAnimateAfterActivityMs = 10000;
 constexpr uint32_t kIdleDelayMs = 40;
 constexpr uint32_t kBacklightDimAfterMs = 15000;
-constexpr uint32_t kBacklightOffAfterMs = 300000;
+constexpr uint32_t kDisplaySleepAfterMs = 60000;
 constexpr uint32_t kBatteryRefreshMs = 60000;
 constexpr uint8_t kBacklightNormal = 96;
 constexpr uint8_t kBacklightDim = 8;
 constexpr uint8_t kBacklightOff = 0;
+constexpr uint32_t kIdleCpuFrequencyMhz = 80;
+constexpr uint32_t kFallbackNormalCpuFrequencyMhz = 240;
 constexpr int kBatteryAdcPin = 10;
 constexpr float kBatteryAdcMultiplier = 2.0f;
 constexpr float kBatteryMinMillivolts = 3300.0f;
@@ -74,6 +76,9 @@ uint32_t lastMarqueeFrame = 0;
 uint32_t lastInputAt = 0;
 bool backlightDimmed = false;
 bool backlightOff = false;
+bool displaySleeping = false;
+bool idleCpuReduced = false;
+uint32_t normalCpuFrequencyMhz = 0;
 bool batteryCacheValid = false;
 uint32_t lastBatteryReadAt = 0;
 int cachedBatteryLevel = -1;
@@ -503,6 +508,22 @@ int readCachedBatteryLevel() {
   return cachedBatteryLevel;
 }
 
+int batterySegmentCount(int level) {
+  if (level >= 85) {
+    return 4;
+  }
+  if (level >= 60) {
+    return 3;
+  }
+  if (level >= 35) {
+    return 2;
+  }
+  if (level >= 15) {
+    return 1;
+  }
+  return 0;
+}
+
 void drawBatteryIndicator(int x, int y, int width, int height,
                           uint16_t foreground, uint16_t background) {
   auto& display = M5Cardputer.Display;
@@ -510,26 +531,32 @@ void drawBatteryIndicator(int x, int y, int width, int height,
 
   const int32_t level = readCachedBatteryLevel();
   const bool hasLevel = level > 0 && level <= 100;
-  const int iconX = x;
-  const int iconY = y + 4;
-  const int iconW = 15;
-  const int iconH = 9;
-  display.drawRect(iconX, iconY, iconW, iconH, foreground);
-  display.fillRect(iconX + iconW, iconY + 3, 2, 3, foreground);
+  const int iconW = 25;
+  const int iconH = 11;
+  const int iconX = x + (width - iconW - 2) / 2;
+  const int iconY = y + (height - iconH) / 2;
+  const uint16_t batteryColor =
+      hasLevel && level < 15 ? TFT_RED
+                             : hasLevel && level < 35 ? TFT_ORANGE
+                                                       : foreground;
+
+  display.drawRect(iconX, iconY, iconW, iconH, batteryColor);
+  display.fillRect(iconX + iconW, iconY + 3, 2, 5, batteryColor);
   if (hasLevel) {
-    const int fillW = (iconW - 4) * level / 100;
-    if (fillW > 0) {
-      display.fillRect(iconX + 2, iconY + 2, fillW, iconH - 4, foreground);
+    constexpr int segmentCount = 4;
+    constexpr int segmentGap = 1;
+    const int segmentW =
+        (iconW - 4 - (segmentCount - 1) * segmentGap) / segmentCount;
+    const int bars = batterySegmentCount(level);
+    for (int i = 0; i < bars; ++i) {
+      const int segmentX = iconX + 2 + i * (segmentW + segmentGap);
+      display.fillRect(segmentX, iconY + 2, segmentW, iconH - 4,
+                       batteryColor);
     }
+  } else {
+    display.drawLine(iconX + 4, iconY + iconH - 3, iconX + iconW - 4,
+                     iconY + 2, batteryColor);
   }
-
-  int labelX = iconX + iconW + 5;
-
-  display.setFont(&fonts::efontJA_12);
-  display.setTextDatum(top_left);
-  display.setTextColor(foreground, background);
-  const String label = hasLevel ? String(level) + "%" : "--%";
-  display.drawString(label, labelX, y + 1);
 }
 
 String currentInputText() {
@@ -1752,7 +1779,7 @@ void drawHeader() {
       currentInputText().length() > 0 ? currentInputText() : String("Type: Romaji");
   const uint16_t inputColor =
       currentInputText().length() > 0 ? TFT_CYAN : TFT_LIGHTGREY;
-  constexpr int batteryWidth = 42;
+  constexpr int batteryWidth = 30;
   const int inputWidth = display.width() - 15 - batteryWidth;
   drawBatteryIndicator(display.width() - batteryWidth - 2, 5, batteryWidth, 16,
                        TFT_WHITE, TFT_NAVY);
@@ -2092,24 +2119,54 @@ void leaveDefinition() {
   dirty = true;
 }
 
-void noteInputActivity() {
+void reduceCpuForIdle() {
+  if (!idleCpuReduced) {
+    setCpuFrequencyMhz(kIdleCpuFrequencyMhz);
+    idleCpuReduced = true;
+  }
+}
+
+void restoreCpuAfterIdle() {
+  if (idleCpuReduced) {
+    const uint32_t restoreFrequency =
+        normalCpuFrequencyMhz > 0 ? normalCpuFrequencyMhz
+                                  : kFallbackNormalCpuFrequencyMhz;
+    setCpuFrequencyMhz(restoreFrequency);
+    idleCpuReduced = false;
+  }
+}
+
+bool noteInputActivity() {
   lastInputAt = millis();
-  if (backlightDimmed || backlightOff) {
+  const bool wokeFromIdle = backlightDimmed || backlightOff || displaySleeping ||
+                            idleCpuReduced;
+  if (wokeFromIdle) {
+    restoreCpuAfterIdle();
+    if (displaySleeping) {
+      M5Cardputer.Display.wakeup();
+      displaySleeping = false;
+    }
     M5Cardputer.Display.setBrightness(kBacklightNormal);
     backlightDimmed = false;
     backlightOff = false;
+    dirty = true;
   }
+  return wokeFromIdle;
 }
 
 void updateBacklightIdle(uint32_t now) {
   const uint32_t idleMs = now - lastInputAt;
-  if (!backlightOff && idleMs >= kBacklightOffAfterMs) {
+  if (!displaySleeping && idleMs >= kDisplaySleepAfterMs) {
     M5Cardputer.Display.setBrightness(kBacklightOff);
     backlightDimmed = true;
     backlightOff = true;
+    M5Cardputer.Display.sleep();
+    displaySleeping = true;
+    reduceCpuForIdle();
   } else if (!backlightDimmed && idleMs >= kBacklightDimAfterMs) {
     M5Cardputer.Display.setBrightness(kBacklightDim);
     backlightDimmed = true;
+    reduceCpuForIdle();
   }
 }
 
@@ -2119,7 +2176,9 @@ void handleKeyboard() {
     return;
   }
 
-  noteInputActivity();
+  if (noteInputActivity()) {
+    return;
+  }
 
   auto &keys = keyboard.keysState();
   if (keys.ctrl) {
@@ -2238,6 +2297,7 @@ void setup() {
 
   Serial.begin(115200);
   delay(100);
+  normalCpuFrequencyMhz = getCpuFrequencyMhz();
 
   auto &display = M5Cardputer.Display;
   display.setRotation(1);
