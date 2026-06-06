@@ -31,8 +31,8 @@ constexpr size_t kMaxSelectedRadicals = 6;
 constexpr size_t kVisibleKanjiCandidates = 24;
 constexpr size_t kKanjiGridColumns = 6;
 constexpr uint32_t kMarqueeFrameMs = 240;
-constexpr uint32_t kMarqueePauseMs = 1500;
-constexpr uint32_t kMarqueeMsPerPixel = 95;
+constexpr uint32_t kMarqueePageHoldMs = 1800;
+constexpr uint32_t kMarqueeLoopPauseMs = 2400;
 constexpr uint32_t kMarqueeAnimateAfterActivityMs = 10000;
 constexpr uint32_t kIdleDelayMs = 40;
 constexpr uint32_t kBacklightDimAfterMs = 15000;
@@ -102,6 +102,8 @@ String marqueeText;
 uint16_t marqueeColor = TFT_WHITE;
 uint16_t marqueeBackground = TFT_BLACK;
 bool marqueeLargeText = false;
+uint32_t marqueeStartedAt = 0;
+int marqueeLastPage = -1;
 String storageDetail;
 String dictionaryBasePath;
 String kanjiIndexStatus = "not checked";
@@ -335,22 +337,54 @@ void drawTextLine(int x, int y, int width, const String &text, uint16_t color,
   display.drawString(ellipsize(text, width), x, y);
 }
 
-int marqueeOffsetForText(const String& text, int width) {
-  const int renderedWidth = textWidth(text);
-  if (renderedWidth <= width) {
-    return 0;
+int marqueePageEnd(const String& text, int start, int width) {
+  int end = start;
+  int lastFit = start;
+  while (end < static_cast<int>(text.length())) {
+    const int next = nextUtf8CharEnd(text, end);
+    const String candidate = text.substring(start, next);
+    if (textWidth(candidate) > width) {
+      return lastFit > start ? lastFit : next;
+    }
+    lastFit = next;
+    end = next;
   }
+  return text.length();
+}
 
-  const int travel = renderedWidth - width + 18;
-  const uint32_t scrollMs = travel * kMarqueeMsPerPixel;
-  const uint32_t cycleMs = kMarqueePauseMs + scrollMs + kMarqueePauseMs;
-  const uint32_t pos = millis() % cycleMs;
-  int offset = 0;
-  if (pos >= kMarqueePauseMs) {
-    const uint32_t moving = pos - kMarqueePauseMs;
-    offset = moving >= scrollMs ? travel : moving / kMarqueeMsPerPixel;
+int marqueePageCount(const String& text, int width) {
+  int count = 0;
+  int start = 0;
+  while (start < static_cast<int>(text.length())) {
+    ++count;
+    const int next = marqueePageEnd(text, start, width);
+    if (next <= start) {
+      break;
+    }
+    start = next;
   }
-  return offset;
+  return count > 0 ? count : 1;
+}
+
+int marqueePageIndexForText(const String& text, int width) {
+  const int pageCount = marqueePageCount(text, width);
+  const uint32_t cycleMs =
+      pageCount * kMarqueePageHoldMs + kMarqueeLoopPauseMs;
+  const uint32_t elapsed = millis() - marqueeStartedAt;
+  uint32_t page = (elapsed % cycleMs) / kMarqueePageHoldMs;
+  if (page >= static_cast<uint32_t>(pageCount)) {
+    page = pageCount - 1;
+  }
+  return static_cast<int>(page);
+}
+
+String marqueePageForText(const String& text, int width, int page) {
+  int start = 0;
+  for (int i = 0; i < page; ++i) {
+    start = marqueePageEnd(text, start, width);
+  }
+  const int end = marqueePageEnd(text, start, width);
+  return text.substring(start, end);
 }
 
 bool shouldAnimateMarquee(uint32_t now) {
@@ -358,11 +392,17 @@ bool shouldAnimateMarquee(uint32_t now) {
          now - lastInputAt <= kMarqueeAnimateAfterActivityMs;
 }
 
-void drawMarqueeFrame() {
+void drawMarqueeFrame(bool force = false) {
   auto& display = M5Cardputer.Display;
   if (!marqueeActive) {
     return;
   }
+
+  const int page = marqueePageIndexForText(marqueeText, marqueeWidth);
+  if (!force && page == marqueeLastPage) {
+    return;
+  }
+  marqueeLastPage = page;
 
   display.setFont(marqueeLargeText ? &fonts::efontJA_16 : &fonts::efontJA_12);
   display.fillRect(marqueeX, marqueeY, marqueeWidth, marqueeHeight,
@@ -370,9 +410,8 @@ void drawMarqueeFrame() {
   display.setTextDatum(top_left);
   display.setTextColor(marqueeColor, marqueeBackground);
   display.setClipRect(marqueeX, marqueeY, marqueeWidth, marqueeHeight);
-  display.drawString(marqueeText,
-                     marqueeX - marqueeOffsetForText(marqueeText, marqueeWidth),
-                     marqueeY);
+  display.drawString(marqueePageForText(marqueeText, marqueeWidth, page),
+                     marqueeX, marqueeY);
   display.clearClipRect();
 }
 
@@ -391,6 +430,14 @@ void drawMarqueeText(int x, int y, int width, int height, const String& text,
     return;
   }
 
+  const bool marqueeChanged =
+      !marqueeActive || marqueeX != x || marqueeY != y ||
+      marqueeWidth != width || marqueeHeight != height ||
+      marqueeText != text || marqueeLargeText != largeText;
+  if (marqueeChanged) {
+    marqueeStartedAt = millis();
+    marqueeLastPage = -1;
+  }
   marqueeActive = true;
   marqueeX = x;
   marqueeY = y;
@@ -400,7 +447,7 @@ void drawMarqueeText(int x, int y, int width, int height, const String& text,
   marqueeColor = color;
   marqueeBackground = background;
   marqueeLargeText = largeText;
-  drawMarqueeFrame();
+  drawMarqueeFrame(true);
 }
 
 void drawMetadataLine(int x, int y, int width, const String& readingLabel,
