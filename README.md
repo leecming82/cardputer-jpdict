@@ -7,19 +7,24 @@ the microSD card. Results are shown in a compact layout with readable Japanese
 fonts, exact and prefix matches, de-inflection hints, full-definition browsing,
 and battery/status indicators.
 
-The firmware also includes an optional single-kanji input helper: type a kana
-reading, open the kanji picker, choose an individual kanji, and insert it into
-the query before running a normal dictionary lookup. Dictionary and kanji data
-are prepared once on the host and copied to the microSD card, so the device does
-not need to parse or index large source files at startup.
+The firmware also includes an optional single-kanji input helper: open Kanji
+Search, type a kanji reading, radical name, radical stroke count, or total kanji stroke count in one
+combined input, choose radical filters or an individual kanji, and insert the
+kanji into the query before running a normal dictionary lookup. Dictionary and
+kanji data are prepared once on the host and copied to the microSD card, so the
+device does not need to parse or index large source files at startup.
 
 ## Usage
 
-Type romaji to compose kana, then press `Enter` to search. Use the arrow keys
-to move through results, `Enter` or the right arrow to open a full definition,
-and the left arrow or `Del` to go back. Press the right arrow from the search
-screen to open the kanji picker for the trailing kana reading. `Tab` clears the
-query, and `Ctrl` shows contextual help for the current screen.
+Type romaji to compose kana, then press `Enter` to search. Use Up/Down to move
+through results and `Enter` to open a full definition. `Esc` exits the current
+screen or result list. Press the right arrow from the search screen to open
+Kanji Search with an empty kanji lookup input. In Kanji Search, the same input
+searches kanji readings, radical names, and numeric
+stroke counts for both parts and full kanji. Parts and Kanji results are shown as separate panes when
+both exist, or full-width when only one exists. Choose a part to add it to the
+shared radical filter list, or choose a kanji to insert it into the query. `Del`
+deletes text, and `Ctrl` shows contextual help for the current screen.
 
 ## Setup
 
@@ -86,18 +91,28 @@ for keys that definitely do not exist, which speeds up misses and fallback
 search paths. Lookup remains functional if the file is absent or cannot be
 loaded; the firmware simply falls back to probing the main dictionary index.
 
-## Kanji Reading Index
+## Kanji Lookup Index
 
-Build the optional kanji picker index from KANJIDIC2:
+Build the optional consolidated kanji lookup index from KANJIDIC2 and KRADFILE:
 
 ```sh
-python3 scripts/build_kanji_index.py convert test/kanjidic2.xml.gz build/sd/kanji
+python3 scripts/build_kanji_index.py convert-all test/kanjidic2.xml.gz test/kradfile build/sd/kanji
 ```
 
-Test a host lookup:
+The device expects these files under `/kanji` on the microSD card:
+
+- `manifest.json`
+- `lookup.records.bin`
+- `lookup.strings.bin`
+
+Test host lookups before copying to SD:
 
 ```sh
 python3 scripts/build_kanji_index.py lookup build/sd/kanji き
+python3 scripts/build_kanji_index.py lookup-radical build/sd/kanji ごんべん
+python3 scripts/build_kanji_index.py lookup-component build/sd/kanji 言
+python3 scripts/build_kanji_index.py lookup-strokes build/sd/kanji 3
+python3 scripts/build_kanji_index.py lookup-kanji-strokes build/sd/kanji 3
 ```
 
 Copy the generated `build/sd/kanji` directory to `/kanji` on the microSD card.

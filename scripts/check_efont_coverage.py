@@ -184,8 +184,12 @@ def scan_jpdict(path):
 
 
 def scan_kanji(path):
-    records_path = os.path.join(path, "records.bin")
-    strings_path = os.path.join(path, "strings.bin")
+    records_path = os.path.join(path, "lookup.records.bin")
+    strings_path = os.path.join(path, "lookup.strings.bin")
+    consolidated = os.path.exists(records_path)
+    if not consolidated:
+        records_path = os.path.join(path, "records.bin")
+        strings_path = os.path.join(path, "strings.bin")
     with open(records_path, "rb") as f:
         records_data = f.read()
     with open(strings_path, "rb") as f:
@@ -196,7 +200,10 @@ def scan_kanji(path):
         key, key_len, offset, byte_len, _char_len = KANJI_RECORD.unpack_from(
             records_data, i * KANJI_RECORD.size
         )
-        yield "kanji.reading", key[:key_len].decode("utf-8", errors="replace")
+        key_text = key[:key_len].decode("utf-8", errors="replace")
+        if consolidated and ":" in key_text:
+            key_text = key_text.split(":", 1)[1]
+        yield "kanji.reading", key_text
         yield "kanji.candidates", read_string(strings_data, offset, byte_len)
 
 

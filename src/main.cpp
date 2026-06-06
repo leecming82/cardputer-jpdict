@@ -13,6 +13,7 @@ constexpr int kSdSckPin = 40;
 constexpr int kSdMisoPin = 39;
 constexpr int kSdMosiPin = 14;
 constexpr int kSdCsPin = 12;
+constexpr int kSdMaxOpenFiles = 12;
 
 constexpr const char* kDictionaryPaths[] = {
     "/jpdict",
@@ -25,6 +26,8 @@ constexpr size_t kMaxResults = 12;
 constexpr size_t kMaxNormalResults = 6;
 constexpr size_t kSearchHistorySize = 8;
 constexpr size_t kMaxKanjiCandidates = 64;
+constexpr size_t kMaxRadicalComponents = 24;
+constexpr size_t kMaxSelectedRadicals = 6;
 constexpr size_t kVisibleKanjiCandidates = 24;
 constexpr size_t kKanjiGridColumns = 6;
 constexpr uint32_t kMarqueeFrameMs = 240;
@@ -59,9 +62,18 @@ size_t searchHistoryCount = 0;
 int searchHistoryIndex = -1;
 KanjiIndex kanjiIndex;
 String kanjiCandidates[kMaxKanjiCandidates];
+String kanjiCandidateScratch[kMaxKanjiCandidates];
+String radicalComponents[kMaxRadicalComponents];
 size_t selectedKanjiCandidate = 0;
+size_t selectedRadicalCandidate = 0;
 size_t kanjiCandidateCount = 0;
+size_t radicalComponentCount = 0;
 String kanjiReading;
+String kanjiSearchCommitted;
+String kanjiSearchPending;
+String kanjiSearchDigits;
+String selectedRadicalComponents[kMaxSelectedRadicals];
+size_t selectedRadicalCount = 0;
 String kanjiSourceSegment;
 int kanjiSourceStart = 0;
 int kanjiSpanOffset = 0;
@@ -106,12 +118,19 @@ enum class StorageState {
 enum class ViewMode {
   Results,
   Definition,
+  KanjiSearch,
   KanjiSpanPicker,
   KanjiPicker,
 };
 
+enum class KanjiSearchPane {
+  Parts,
+  Kanji,
+};
+
 StorageState storageState = StorageState::SdChecking;
 ViewMode viewMode = ViewMode::Results;
+KanjiSearchPane kanjiSearchPane = KanjiSearchPane::Parts;
 int definitionScrollLine = 0;
 
 constexpr int kCompactContentTop = 26;
@@ -125,6 +144,7 @@ void removeLastUtf8Char(String& text);
 int previousUtf8CharStart(const String& text, int pos);
 int nextUtf8CharEnd(const String& text, int pos);
 void drawResults();
+void leaveDefinition();
 
 bool usesLargeSearchHeader() {
   return viewMode == ViewMode::Results && !searched &&
@@ -158,7 +178,10 @@ bool hasDictionaryFiles(const char* basePath) {
 String startupStatusLine() {
   switch (storageState) {
     case StorageState::DictionaryOk:
-      return "Dict OK  SD OK";
+      if (kanjiIndexStatus == "OK /kanji") {
+        return "SD OK  Dict OK  Kanji OK";
+      }
+      return String("SD OK  Dict OK  ") + kanjiIndexStatus;
     case StorageState::SdMissing:
       return "SD card missing";
     case StorageState::DictionaryMissing:
@@ -191,24 +214,31 @@ String startupDetailLine() {
 }
 
 uint16_t startupStatusColor() {
-  return storageState == StorageState::DictionaryOk ? TFT_GREEN : TFT_ORANGE;
+  return storageState == StorageState::DictionaryOk &&
+                 kanjiIndexStatus == "OK /kanji"
+             ? TFT_GREEN
+             : TFT_ORANGE;
 }
 
 bool hasKanjiIndexFiles(const char* basePath) {
   return SD.exists(joinPath(basePath, "manifest.json")) &&
-         SD.exists(joinPath(basePath, "buckets.bin")) &&
-         SD.exists(joinPath(basePath, "records.bin")) &&
-         SD.exists(joinPath(basePath, "strings.bin"));
+         SD.exists(joinPath(basePath, "lookup.records.bin")) &&
+         SD.exists(joinPath(basePath, "lookup.strings.bin"));
+}
+
+bool hasRadicalIndexFiles(const char* basePath) {
+  return hasKanjiIndexFiles(basePath);
 }
 
 bool logKanjiIndexFiles(const char* basePath) {
   const bool hasManifest = SD.exists(joinPath(basePath, "manifest.json"));
-  const bool hasBuckets = SD.exists(joinPath(basePath, "buckets.bin"));
-  const bool hasRecords = SD.exists(joinPath(basePath, "records.bin"));
-  const bool hasStrings = SD.exists(joinPath(basePath, "strings.bin"));
-  Serial.printf("Kanji index files at %s: manifest=%u buckets=%u records=%u strings=%u\n",
-                basePath, hasManifest, hasBuckets, hasRecords, hasStrings);
-  return hasManifest && hasBuckets && hasRecords && hasStrings;
+  const bool hasRecords = SD.exists(joinPath(basePath, "lookup.records.bin"));
+  const bool hasStrings = SD.exists(joinPath(basePath, "lookup.strings.bin"));
+  const bool hasRadicals = hasRadicalIndexFiles(basePath);
+  Serial.printf(
+      "Kanji index files at %s: manifest=%u lookup_records=%u lookup_strings=%u radicals=%u\n",
+      basePath, hasManifest, hasRecords, hasStrings, hasRadicals);
+  return hasManifest && hasRecords && hasStrings;
 }
 
 bool openKanjiIndex(const char* reason) {
@@ -226,7 +256,8 @@ bool openKanjiIndex(const char* reason) {
 
   if (kanjiIndex.open("/kanji")) {
     kanjiIndexStatus = "OK /kanji";
-    Serial.println("Kanji index opened: /kanji");
+    Serial.printf("Kanji index opened: /kanji radicals=%u\n",
+                  kanjiIndex.hasRadicalIndex());
     return true;
   }
 
@@ -241,7 +272,7 @@ void probeStorage() {
   dictionaryBasePath = "";
 
   SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
-  if (!SD.begin(kSdCsPin, SPI, 25000000, "/sd", 10)) {
+  if (!SD.begin(kSdCsPin, SPI, 25000000, "/sd", kSdMaxOpenFiles)) {
     Serial.println("SD init failed");
     return;
   }
@@ -560,6 +591,18 @@ void drawBatteryIndicator(int x, int y, int width, int height,
 }
 
 String currentInputText() {
+  if (viewMode == ViewMode::KanjiSearch) {
+    String selected = "Selected:";
+    if (selectedRadicalCount == 0) {
+      selected += " none";
+    } else {
+      for (size_t i = 0; i < selectedRadicalCount; ++i) {
+        selected += " ";
+        selected += selectedRadicalComponents[i];
+      }
+    }
+    return selected;
+  }
   if (committedKana.length() == 0 && pendingRomaji.length() == 0) {
     return "";
   }
@@ -651,6 +694,24 @@ void composePending(bool final = false) {
     committedKana += composed.committed.c_str();
   }
   pendingRomaji = composed.pending.c_str();
+}
+
+void composeKanjiSearchText(String& committed, String& pending,
+                            bool final = false) {
+  if (pending.length() == 0) {
+    return;
+  }
+
+  const jpdict::RomajiComposition composed =
+      jpdict::composeRomaji(pending.c_str(), final);
+  if (!composed.committed.empty()) {
+    committed += composed.committed.c_str();
+  }
+  pending = composed.pending.c_str();
+}
+
+void composeKanjiSearchPending(bool final = false) {
+  composeKanjiSearchText(kanjiSearchCommitted, kanjiSearchPending, final);
 }
 
 void removeLastUtf8Char(String& text) {
@@ -1548,7 +1609,43 @@ void runSearch() {
   dirty = true;
 }
 
+bool kanjiSearchHasBothPanes() {
+  return radicalComponentCount > 0 && kanjiCandidateCount > 0;
+}
+
+size_t kanjiSearchActiveCount() {
+  return kanjiSearchPane == KanjiSearchPane::Parts ? radicalComponentCount
+                                                   : kanjiCandidateCount;
+}
+
+size_t& kanjiSearchActiveSelection() {
+  return kanjiSearchPane == KanjiSearchPane::Parts ? selectedRadicalCandidate
+                                                   : selectedKanjiCandidate;
+}
+
+size_t kanjiSearchNavigationColumns() {
+  return kanjiSearchHasBothPanes() ? 3 : kKanjiGridColumns;
+}
+
 void selectPreviousResult() {
+  if (viewMode == ViewMode::KanjiSearch) {
+    size_t& selected = kanjiSearchActiveSelection();
+    const size_t columns = kanjiSearchNavigationColumns();
+    if (selected > 0 && selected % columns != 0) {
+      --selected;
+      dirty = true;
+    } else if (kanjiSearchHasBothPanes() &&
+               kanjiSearchPane == KanjiSearchPane::Kanji) {
+      kanjiSearchPane = KanjiSearchPane::Parts;
+      selectedRadicalCandidate =
+          selectedRadicalCandidate < radicalComponentCount
+              ? selectedRadicalCandidate
+              : radicalComponentCount > 0 ? radicalComponentCount - 1 : 0;
+      dirty = true;
+    }
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiSpanPicker) {
     if (kanjiSpanOffset > 0) {
       kanjiSpanOffset = previousUtf8CharStart(kanjiSourceSegment, kanjiSpanOffset);
@@ -1589,6 +1686,25 @@ void selectPreviousResult() {
 }
 
 void selectNextResult() {
+  if (viewMode == ViewMode::KanjiSearch) {
+    size_t& selected = kanjiSearchActiveSelection();
+    const size_t count = kanjiSearchActiveCount();
+    const size_t columns = kanjiSearchNavigationColumns();
+    if (selected + 1 < count && selected % columns != columns - 1) {
+      ++selected;
+      dirty = true;
+    } else if (kanjiSearchHasBothPanes() &&
+               kanjiSearchPane == KanjiSearchPane::Parts) {
+      kanjiSearchPane = KanjiSearchPane::Kanji;
+      selectedKanjiCandidate =
+          selectedKanjiCandidate < kanjiCandidateCount
+              ? selectedKanjiCandidate
+              : kanjiCandidateCount > 0 ? kanjiCandidateCount - 1 : 0;
+      dirty = true;
+    }
+    return;
+  }
+
   if (viewMode == ViewMode::KanjiSpanPicker) {
     const int nextOffset = nextUtf8CharEnd(kanjiSourceSegment, kanjiSpanOffset);
     if (nextOffset < kanjiSourceSegment.length()) {
@@ -1631,6 +1747,16 @@ void selectNextResult() {
 }
 
 void selectUp() {
+  if (viewMode == ViewMode::KanjiSearch) {
+    size_t& selected = kanjiSearchActiveSelection();
+    const size_t columns = kanjiSearchNavigationColumns();
+    if (selected >= columns) {
+      selected -= columns;
+      dirty = true;
+    }
+    return;
+  }
+
   if (recallSearchHistory(-1)) {
     return;
   }
@@ -1651,6 +1777,17 @@ void selectUp() {
 }
 
 void selectDown() {
+  if (viewMode == ViewMode::KanjiSearch) {
+    size_t& selected = kanjiSearchActiveSelection();
+    const size_t count = kanjiSearchActiveCount();
+    const size_t columns = kanjiSearchNavigationColumns();
+    if (selected + columns < count) {
+      selected += columns;
+      dirty = true;
+    }
+    return;
+  }
+
   if (recallSearchHistory(1)) {
     return;
   }
@@ -1676,6 +1813,240 @@ void clearQuery() {
   resetSearchHistoryRecall();
   clearSearchResults();
   dirty = true;
+}
+
+bool kanjiListContains(String* items, size_t count, const String& value) {
+  for (size_t i = 0; i < count; ++i) {
+    if (items[i] == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void filterKanjiCandidatesByList(String* allowed, size_t allowedCount) {
+  size_t kept = 0;
+  for (size_t i = 0; i < kanjiCandidateCount; ++i) {
+    if (kanjiListContains(allowed, allowedCount, kanjiCandidates[i])) {
+      kanjiCandidates[kept++] = kanjiCandidates[i];
+    }
+  }
+  kanjiCandidateCount = kept;
+}
+
+void refreshSelectedRadicalKanjiCandidates() {
+  kanjiCandidateCount = 0;
+  if (!kanjiIndex.hasRadicalIndex() || selectedRadicalCount == 0) {
+    return;
+  }
+
+  kanjiCandidateCount = kanjiIndex.lookupComponentKanji(
+      selectedRadicalComponents[0], kanjiCandidates, kMaxKanjiCandidates);
+  for (size_t i = 1; i < selectedRadicalCount && kanjiCandidateCount > 0; ++i) {
+    const size_t scratchCount = kanjiIndex.lookupComponentKanji(
+        selectedRadicalComponents[i], kanjiCandidateScratch,
+        kMaxKanjiCandidates);
+    filterKanjiCandidatesByList(kanjiCandidateScratch, scratchCount);
+  }
+}
+
+String kanjiSearchKey() {
+  return kanjiSearchDigits.length() > 0 ? kanjiSearchDigits
+                                        : kanjiSearchCommitted + kanjiSearchPending;
+}
+
+bool kanjiSearchIsStrokeCount() {
+  return kanjiSearchDigits.length() > 0;
+}
+
+bool kanjiSearchHasInput() {
+  return kanjiSearchKey().length() > 0;
+}
+
+void normalizeKanjiSearchPane() {
+  if (radicalComponentCount == 0 && kanjiCandidateCount > 0) {
+    kanjiSearchPane = KanjiSearchPane::Kanji;
+  } else if (kanjiCandidateCount == 0 && radicalComponentCount > 0) {
+    kanjiSearchPane = KanjiSearchPane::Parts;
+  }
+  if (selectedRadicalCandidate >= radicalComponentCount) {
+    selectedRadicalCandidate = radicalComponentCount > 0 ? radicalComponentCount - 1 : 0;
+  }
+  if (selectedKanjiCandidate >= kanjiCandidateCount) {
+    selectedKanjiCandidate = kanjiCandidateCount > 0 ? kanjiCandidateCount - 1 : 0;
+  }
+}
+
+void refreshKanjiSearchCandidates() {
+  radicalComponentCount = 0;
+  kanjiCandidateCount = 0;
+
+  openKanjiIndex("search");
+  if (!kanjiIndex.isOpen()) {
+    return;
+  }
+
+  const String key = kanjiSearchKey();
+  if (kanjiIndex.hasRadicalIndex()) {
+    if (kanjiSearchIsStrokeCount()) {
+      radicalComponentCount = kanjiIndex.lookupRadicalsByStroke(
+          key, radicalComponents, kMaxRadicalComponents);
+    } else if (key.length() > 0) {
+      radicalComponentCount = kanjiIndex.lookupRadicalAliases(
+          key, radicalComponents, kMaxRadicalComponents);
+    }
+  }
+
+  refreshSelectedRadicalKanjiCandidates();
+  if (kanjiSearchIsStrokeCount() && key.length() > 0 &&
+      kanjiIndex.hasRadicalIndex()) {
+    const size_t strokeKanjiCount = kanjiIndex.lookupKanjiByStroke(
+        key, kanjiCandidateScratch, kMaxKanjiCandidates);
+    if (selectedRadicalCount > 0) {
+      filterKanjiCandidatesByList(kanjiCandidateScratch, strokeKanjiCount);
+    } else {
+      kanjiCandidateCount = strokeKanjiCount;
+      for (size_t i = 0; i < kanjiCandidateCount; ++i) {
+        kanjiCandidates[i] = kanjiCandidateScratch[i];
+      }
+    }
+  } else if (!kanjiSearchIsStrokeCount() && key.length() > 0) {
+    const size_t readingCount =
+        kanjiIndex.lookup(key, kanjiCandidateScratch, kMaxKanjiCandidates);
+    if (selectedRadicalCount > 0) {
+      filterKanjiCandidatesByList(kanjiCandidateScratch, readingCount);
+    } else {
+      kanjiCandidateCount = readingCount;
+      for (size_t i = 0; i < kanjiCandidateCount; ++i) {
+        kanjiCandidates[i] = kanjiCandidateScratch[i];
+      }
+    }
+  }
+  normalizeKanjiSearchPane();
+}
+
+void clearKanjiSearchInput() {
+  kanjiSearchCommitted = "";
+  kanjiSearchPending = "";
+  kanjiSearchDigits = "";
+}
+
+void openKanjiSearch() {
+  composePending(true);
+  kanjiSearchCommitted = "";
+  kanjiSearchPending = "";
+  kanjiSearchDigits = "";
+  selectedRadicalCount = 0;
+  selectedRadicalCandidate = 0;
+  selectedKanjiCandidate = 0;
+  kanjiSearchPane = KanjiSearchPane::Parts;
+  viewMode = ViewMode::KanjiSearch;
+  refreshKanjiSearchCandidates();
+  dirty = true;
+}
+
+void closeKanjiSearch() {
+  if (viewMode != ViewMode::KanjiSearch) {
+    return;
+  }
+  viewMode = ViewMode::Results;
+  dirty = true;
+}
+
+void appendKanjiSearchChar(char ch) {
+  if ((ch >= 'A' && ch <= 'Z')) {
+    ch = static_cast<char>(ch - 'A' + 'a');
+  }
+
+  if (ch >= '0' && ch <= '9') {
+    if (kanjiSearchCommitted.length() > 0 || kanjiSearchPending.length() > 0 ||
+        kanjiSearchDigits.length() >= 2) {
+      return;
+    }
+    kanjiSearchDigits += ch;
+  } else {
+    if (kanjiSearchDigits.length() > 0 ||
+        kanjiSearchCommitted.length() + kanjiSearchPending.length() >=
+            kMaxQueryChars) {
+      return;
+    }
+    if (!((ch >= 'a' && ch <= 'z') || ch == '-' || ch == '\'')) {
+      return;
+    }
+    kanjiSearchPending += ch;
+    composeKanjiSearchPending(false);
+  }
+  refreshKanjiSearchCandidates();
+  dirty = true;
+}
+
+void deleteKanjiSearchChar() {
+  bool changed = false;
+  if (kanjiSearchDigits.length() > 0) {
+    kanjiSearchDigits.remove(kanjiSearchDigits.length() - 1);
+    changed = true;
+  } else if (kanjiSearchPending.length() > 0) {
+    kanjiSearchPending.remove(kanjiSearchPending.length() - 1);
+    changed = true;
+  } else if (kanjiSearchCommitted.length() > 0) {
+    removeLastUtf8Char(kanjiSearchCommitted);
+    changed = true;
+  }
+
+  if (!changed) {
+    return;
+  }
+  refreshKanjiSearchCandidates();
+  dirty = true;
+}
+
+void addSelectedRadical(const String& radical) {
+  if (selectedRadicalCount >= kMaxSelectedRadicals ||
+      kanjiListContains(selectedRadicalComponents, selectedRadicalCount,
+                        radical)) {
+    return;
+  }
+  selectedRadicalComponents[selectedRadicalCount++] = radical;
+  clearKanjiSearchInput();
+  refreshKanjiSearchCandidates();
+  dirty = true;
+}
+
+void removeLastSelectedRadical() {
+  if (selectedRadicalCount == 0) {
+    return;
+  }
+  --selectedRadicalCount;
+  selectedRadicalComponents[selectedRadicalCount] = "";
+  refreshKanjiSearchCandidates();
+  dirty = true;
+}
+
+void insertKanjiSearchCandidate(size_t index) {
+  if (index >= kanjiCandidateCount) {
+    return;
+  }
+  committedKana += kanjiCandidates[index];
+  pendingRomaji = "";
+  resetSearchHistoryRecall();
+  clearSearchResults();
+  viewMode = ViewMode::Results;
+  dirty = true;
+}
+
+void chooseKanjiSearchItem() {
+  if (viewMode != ViewMode::KanjiSearch) {
+    return;
+  }
+
+  if (kanjiSearchPane == KanjiSearchPane::Parts && radicalComponentCount > 0) {
+    addSelectedRadical(radicalComponents[selectedRadicalCandidate]);
+    return;
+  }
+
+  if (kanjiSearchPane == KanjiSearchPane::Kanji && kanjiCandidateCount > 0) {
+    insertKanjiSearchCandidate(selectedKanjiCandidate);
+  }
 }
 
 void openKanjiPicker() {
@@ -1722,6 +2093,46 @@ void closeKanjiPicker() {
   }
   viewMode = ViewMode::Results;
   dirty = true;
+}
+
+bool isBackKey(char ch) {
+  return ch == '`' || ch == '~';
+}
+
+void handleEscCommand() {
+  if (viewMode == ViewMode::Definition) {
+    leaveDefinition();
+    return;
+  }
+  if (viewMode == ViewMode::KanjiSearch) {
+    if (kanjiSearchHasInput()) {
+      clearKanjiSearchInput();
+      refreshKanjiSearchCandidates();
+      dirty = true;
+      return;
+    }
+    if (selectedRadicalCount > 0) {
+      removeLastSelectedRadical();
+      return;
+    }
+    closeKanjiSearch();
+    return;
+  }
+  if (viewMode == ViewMode::KanjiSpanPicker ||
+      viewMode == ViewMode::KanjiPicker) {
+    closeKanjiPicker();
+    return;
+  }
+  if (viewMode == ViewMode::Results && searched) {
+    clearSearchResults();
+    dirty = true;
+    return;
+  }
+  if (viewMode == ViewMode::Results &&
+      (committedKana.length() > 0 || pendingRomaji.length() > 0)) {
+    clearQuery();
+    return;
+  }
 }
 
 void insertSelectedKanji() {
@@ -1809,8 +2220,8 @@ void drawResults() {
                        pad, top + 2);
     display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
     if (storageState == StorageState::DictionaryOk) {
-      display.drawString("Type: Romaji", pad, top + 18);
-      display.drawString("Enter: Search  Right: Kanji", pad, top + 33);
+      display.drawString("Enter: Search", pad, top + 18);
+      display.drawString("Right: Kanji", pad, top + 33);
     } else {
       display.drawString(ellipsize(startupDetailLine(), display.width() - pad * 2),
                          pad, top + 18);
@@ -1892,6 +2303,189 @@ void drawDefinition() {
   drawWrappedText(pad, bodyY, display.width() - pad * 2,
                   bottom - bodyY - 2, definition.numberedGlosses, TFT_WHITE,
                   TFT_BLACK, definitionScrollLine, true);
+}
+
+void drawKanjiSearchGridItem(size_t index, const String& text, int x, int y,
+                             int cellW) {
+  auto &display = M5Cardputer.Display;
+  const bool selected = index == selectedKanjiCandidate;
+  const bool isPart = index < radicalComponentCount;
+  const uint16_t bg = selected ? TFT_DARKGREY : TFT_BLACK;
+  const uint16_t fg = selected ? TFT_YELLOW : isPart ? TFT_CYAN : TFT_WHITE;
+  display.fillRect(x - 1, y - 1, cellW, 20, bg);
+  display.setTextColor(fg, bg);
+  display.drawString(text, x + 3, y);
+}
+
+void drawKanjiSearchGroupBorder(size_t pageStart, size_t pageEnd,
+                                size_t groupStart, size_t groupEnd, int x0,
+                                int y0, int cellW, uint16_t color) {
+  auto &display = M5Cardputer.Display;
+  constexpr int rowH = 21;
+  const size_t start = groupStart > pageStart ? groupStart : pageStart;
+  const size_t end = groupEnd < pageEnd ? groupEnd : pageEnd;
+  if (start >= end) {
+    return;
+  }
+
+  for (size_t rowStart = pageStart; rowStart < pageEnd;
+       rowStart += kKanjiGridColumns) {
+    const size_t rowEnd = rowStart + kKanjiGridColumns < pageEnd
+                              ? rowStart + kKanjiGridColumns
+                              : pageEnd;
+    const size_t segmentStart = start > rowStart ? start : rowStart;
+    const size_t segmentEnd = end < rowEnd ? end : rowEnd;
+    if (segmentStart >= segmentEnd) {
+      continue;
+    }
+
+    const int row = (rowStart - pageStart) / kKanjiGridColumns;
+    const int colStart = segmentStart - rowStart;
+    const int colEnd = segmentEnd - rowStart;
+    display.drawRect(x0 + colStart * cellW - 2, y0 + row * rowH - 2,
+                     (colEnd - colStart) * cellW + 3, rowH + 2, color);
+  }
+}
+
+size_t visibleKanjiSearchItems(int gridTop, int gridBottom, size_t columns) {
+  constexpr int rowH = 21;
+  if (gridBottom <= gridTop) {
+    return columns;
+  }
+  size_t rows = (gridBottom - gridTop) / rowH;
+  if (rows == 0) {
+    rows = 1;
+  }
+  return rows * columns;
+}
+
+void drawKanjiSearchCell(const String& text, int x, int y, int cellW,
+                         bool selected, bool isPart) {
+  auto &display = M5Cardputer.Display;
+  const uint16_t bg = selected ? TFT_DARKGREY : TFT_BLACK;
+  const uint16_t fg = selected ? TFT_YELLOW : isPart ? TFT_CYAN : TFT_WHITE;
+  display.fillRect(x - 1, y - 1, cellW, 20, bg);
+  display.setTextColor(fg, bg);
+  display.drawString(text, x + 3, y);
+}
+
+void drawKanjiSearchPaneBox(const char* label, size_t count, int x, int y,
+                            int w, int h, bool active, bool isPart) {
+  auto &display = M5Cardputer.Display;
+  const uint16_t color = active ? TFT_YELLOW : isPart ? TFT_CYAN : TFT_LIGHTGREY;
+  display.drawRect(x, y, w, h, color);
+  display.setFont(&fonts::efontJA_12);
+  display.setTextColor(color, TFT_BLACK);
+  display.drawString(String(label) + " " + count, x + 4, y + 3);
+}
+
+void drawKanjiSearch() {
+  auto &display = M5Cardputer.Display;
+  const int top = contentTop();
+  const int bottom = contentBottom();
+  constexpr int pad = 5;
+  display.fillRect(0, top, display.width(), bottom - top, TFT_BLACK);
+  display.setTextDatum(top_left);
+  display.setFont(&fonts::efontJA_12);
+
+  if (!kanjiIndex.isOpen()) {
+    display.setTextColor(TFT_ORANGE, TFT_BLACK);
+    display.drawString("Kanji index missing", pad, top + 2);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Expected /kanji", pad, top + 18);
+    return;
+  }
+
+  const String input = kanjiSearchKey().length() > 0 ? kanjiSearchKey() : "-";
+  display.setTextColor(TFT_CYAN, TFT_BLACK);
+  display.drawString(
+      ellipsize(String("Input: ") + input, display.width() - pad * 2), pad,
+      top + 2);
+
+  const size_t total = radicalComponentCount + kanjiCandidateCount;
+  if (total == 0) {
+    if (!kanjiSearchHasInput() && selectedRadicalCount == 0) {
+      display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+      display.drawString("Type reading, part, or count", pad, top + 19);
+      display.drawString("Enter: Pick  Esc: Back", pad, top + 35);
+      if (kanjiIndex.isOpen() && !kanjiIndex.hasRadicalIndex()) {
+        display.setTextColor(TFT_ORANGE, TFT_BLACK);
+        display.drawString("Radical index unavailable", pad, top + 51);
+      }
+    } else {
+      display.setTextColor(TFT_ORANGE, TFT_BLACK);
+      display.drawString("No matches", pad, top + 19);
+      if (!kanjiIndex.hasRadicalIndex()) {
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Radical files not found", pad, top + 35);
+      }
+    }
+    return;
+  }
+
+  constexpr int headerH = 16;
+  constexpr int rowH = 21;
+  const int paneTop = top + 19;
+  const int paneH = bottom - paneTop - 1;
+  const bool split = radicalComponentCount > 0 && kanjiCandidateCount > 0;
+  const int gap = split ? 4 : 0;
+  const int partW = split ? (display.width() - pad * 2 - gap) / 2
+                          : display.width() - pad * 2;
+  const int kanjiW = split ? display.width() - pad * 2 - gap - partW
+                           : display.width() - pad * 2;
+  const int partX = pad;
+  const int kanjiX = split ? pad + partW + gap : pad;
+
+  if (radicalComponentCount > 0) {
+    const bool active = kanjiSearchPane == KanjiSearchPane::Parts;
+    drawKanjiSearchPaneBox("Parts", radicalComponentCount, partX, paneTop,
+                           partW, paneH, active, true);
+    const size_t columns = split ? 3 : kKanjiGridColumns;
+    const int cellW = (partW - 6) / columns;
+    const int gridTop = paneTop + headerH;
+    const size_t visibleItems = visibleKanjiSearchItems(
+        gridTop, bottom - 2, columns);
+    const size_t pageStart =
+        (selectedRadicalCandidate / visibleItems) * visibleItems;
+    const size_t pageEnd =
+        pageStart + visibleItems < radicalComponentCount
+            ? pageStart + visibleItems
+            : radicalComponentCount;
+    display.setFont(&fonts::efontJA_16);
+    for (size_t i = pageStart; i < pageEnd; ++i) {
+      const size_t pageIndex = i - pageStart;
+      const int x = partX + 3 + (pageIndex % columns) * cellW;
+      const int y = gridTop + (pageIndex / columns) * rowH;
+      drawKanjiSearchCell(radicalComponents[i], x, y, cellW,
+                          active && i == selectedRadicalCandidate, true);
+    }
+  }
+
+  if (kanjiCandidateCount > 0) {
+    const bool active = kanjiSearchPane == KanjiSearchPane::Kanji;
+    drawKanjiSearchPaneBox("Kanji", kanjiCandidateCount, kanjiX, paneTop,
+                           kanjiW, paneH, active, false);
+    const size_t columns = split ? 3 : kKanjiGridColumns;
+    const int cellW = (kanjiW - 6) / columns;
+    const int gridTop = paneTop + headerH;
+    const size_t visibleItems = visibleKanjiSearchItems(
+        gridTop, bottom - 2, columns);
+    const size_t pageStart =
+        (selectedKanjiCandidate / visibleItems) * visibleItems;
+    const size_t pageEnd =
+        pageStart + visibleItems < kanjiCandidateCount
+            ? pageStart + visibleItems
+            : kanjiCandidateCount;
+    display.setFont(&fonts::efontJA_16);
+    for (size_t i = pageStart; i < pageEnd; ++i) {
+      const size_t pageIndex = i - pageStart;
+      const int x = kanjiX + 3 + (pageIndex % columns) * cellW;
+      const int y = gridTop + (pageIndex / columns) * rowH;
+      drawKanjiSearchCell(kanjiCandidates[i], x, y, cellW,
+                          active && i == selectedKanjiCandidate, false);
+    }
+  }
+  display.setFont(&fonts::efontJA_12);
 }
 
 void drawKanjiPicker() {
@@ -2006,6 +2600,9 @@ String helpTitle() {
   if (viewMode == ViewMode::KanjiSpanPicker) {
     return "Kanji Span";
   }
+  if (viewMode == ViewMode::KanjiSearch) {
+    return "Kanji Search";
+  }
   if (viewMode == ViewMode::KanjiPicker) {
     return "Kanji Picker";
   }
@@ -2027,25 +2624,32 @@ size_t helpLines(String* lines, size_t maxLines) {
   };
 
   if (viewMode == ViewMode::KanjiSpanPicker) {
-    addLine("Left/Right: Span");
+    addLine("Up/Down: Span");
     addLine("Enter: Choose");
-    addLine("Del: Cancel");
-  } else if (viewMode == ViewMode::KanjiPicker) {
+    addLine("Esc: Cancel");
+  } else if (viewMode == ViewMode::KanjiSearch) {
+    addLine("Type: reading/part/count");
+    addLine("Parts: add filter");
+    addLine("Kanji: insert");
     addLine("Arrows: Nav");
+    addLine("Enter: Pick  Esc: Back");
+  } else if (viewMode == ViewMode::KanjiPicker) {
+    addLine("Up/Down: Nav");
     addLine("Enter: Insert");
-    addLine("Del: Cancel");
+    addLine("Esc: Cancel");
   } else if (viewMode == ViewMode::Definition) {
-    addLine("Arrows: Scroll");
-    addLine("Left/Del: Back");
+    addLine("Up/Down: Scroll");
+    addLine("Esc: Back");
     addLine("Ctrl: Hide Help");
   } else if (searched && resultCount > 0) {
-    addLine("Arrows: Nav");
-    addLine("Enter/Right: Open");
-    addLine("Tab: Clear");
+    addLine("Up/Down: Nav");
+    addLine("Enter: Open");
+    addLine("Esc: Back");
   } else {
     addLine("Type: Romaji");
     addLine("Enter: Search");
     addLine("Right: Kanji");
+    addLine("Esc: Clear");
   }
 
   if (count < maxLines && viewMode != ViewMode::Definition) {
@@ -2090,6 +2694,8 @@ void drawApp() {
   drawHeader();
   if (viewMode == ViewMode::Definition) {
     drawDefinition();
+  } else if (viewMode == ViewMode::KanjiSearch) {
+    drawKanjiSearch();
   } else if (viewMode == ViewMode::KanjiSpanPicker) {
     drawKanjiSpanPicker();
   } else if (viewMode == ViewMode::KanjiPicker) {
@@ -2193,16 +2799,13 @@ void handleKeyboard() {
   }
 
   if (keys.del) {
-    if (viewMode == ViewMode::Definition) {
-      leaveDefinition();
+    if (viewMode == ViewMode::KanjiSearch) {
+      deleteKanjiSearchChar();
       return;
     }
-    if (viewMode == ViewMode::KanjiSpanPicker ||
-        viewMode == ViewMode::KanjiPicker) {
-      closeKanjiPicker();
-      return;
+    if (viewMode == ViewMode::Results) {
+      deleteChar();
     }
-    deleteChar();
     return;
   }
   if (keys.enter) {
@@ -2214,31 +2817,49 @@ void handleKeyboard() {
       insertSelectedKanji();
       return;
     }
+    if (viewMode == ViewMode::KanjiSearch) {
+      const bool hadPending = kanjiSearchPending.length() > 0;
+      composeKanjiSearchPending(true);
+      if (hadPending) {
+        refreshKanjiSearchCandidates();
+      }
+      chooseKanjiSearchItem();
+      return;
+    }
     openDefinition();
     return;
   }
   if (keys.tab) {
-    if (viewMode == ViewMode::Definition) {
-      leaveDefinition();
-      return;
-    }
-    if (viewMode == ViewMode::KanjiSpanPicker ||
-        viewMode == ViewMode::KanjiPicker) {
-      closeKanjiPicker();
-      return;
-    }
-    clearQuery();
     return;
   }
 
   if (viewMode == ViewMode::Definition) {
     for (const char ch : keys.word) {
-      if (ch == ';') {
+      if (isBackKey(ch)) {
+        handleEscCommand();
+      } else if (ch == ';') {
+        selectUp();
+      } else if (ch == '.' || ch == ' ') {
+        selectDown();
+      }
+    }
+    return;
+  }
+
+  if (viewMode == ViewMode::KanjiSearch) {
+    for (const char ch : keys.word) {
+      if (isBackKey(ch)) {
+        handleEscCommand();
+      } else if (ch == ';') {
         selectUp();
       } else if (ch == '.' || ch == ' ') {
         selectDown();
       } else if (ch == ',') {
-        leaveDefinition();
+        selectPreviousResult();
+      } else if (ch == '/') {
+        selectNextResult();
+      } else {
+        appendKanjiSearchChar(ch);
       }
     }
     return;
@@ -2246,7 +2867,9 @@ void handleKeyboard() {
 
   if (viewMode == ViewMode::KanjiSpanPicker) {
     for (const char ch : keys.word) {
-      if (ch == ';' || ch == ',') {
+      if (isBackKey(ch)) {
+        handleEscCommand();
+      } else if (ch == ';' || ch == ',') {
         selectPreviousResult();
       } else if (ch == '.' || ch == ' ' || ch == '/') {
         selectNextResult();
@@ -2257,7 +2880,9 @@ void handleKeyboard() {
 
   if (viewMode == ViewMode::KanjiPicker) {
     for (const char ch : keys.word) {
-      if (ch == ';') {
+      if (isBackKey(ch)) {
+        handleEscCommand();
+      } else if (ch == ';') {
         selectUp();
       } else if (ch == '.' || ch == ' ') {
         selectDown();
@@ -2271,18 +2896,18 @@ void handleKeyboard() {
   }
 
   for (const char ch : keys.word) {
-    if (ch == ';') {
+    if (isBackKey(ch)) {
+      handleEscCommand();
+    } else if (ch == ';') {
       selectUp();
     } else if (ch == '.' || ch == ' ') {
       selectDown();
-    } else if (ch == '/') {
-      if (searched && resultCount > 0) {
-        openDefinition();
-      } else {
-        openKanjiPicker();
-      }
     } else if (ch == ',') {
-      // Left arrow is currently only meaningful in detail/picker views.
+      // Left arrow is not used for main navigation.
+    } else if (ch == '/') {
+      if (!searched) {
+        openKanjiSearch();
+      }
     } else {
       appendChar(ch);
     }

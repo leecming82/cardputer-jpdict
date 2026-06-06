@@ -24,29 +24,6 @@ uint32_t readLe32(const uint8_t* p) {
          (static_cast<uint32_t>(p[3]) << 24);
 }
 
-uint32_t firstUtf8Codepoint(const String& text) {
-  if (text.length() == 0) {
-    return 0;
-  }
-  const auto* data = reinterpret_cast<const uint8_t*>(text.c_str());
-  const uint8_t first = data[0];
-  if (first < 0x80) {
-    return first;
-  }
-  if ((first & 0xE0) == 0xC0 && text.length() >= 2) {
-    return ((first & 0x1F) << 6) | (data[1] & 0x3F);
-  }
-  if ((first & 0xF0) == 0xE0 && text.length() >= 3) {
-    return ((first & 0x0F) << 12) | ((data[1] & 0x3F) << 6) |
-           (data[2] & 0x3F);
-  }
-  if ((first & 0xF8) == 0xF0 && text.length() >= 4) {
-    return ((first & 0x07) << 18) | ((data[1] & 0x3F) << 12) |
-           ((data[2] & 0x3F) << 6) | (data[3] & 0x3F);
-  }
-  return 0;
-}
-
 String utf8CharAt(const String& text, int pos) {
   if (pos >= static_cast<int>(text.length())) {
     return "";
@@ -64,59 +41,42 @@ String utf8CharAt(const String& text, int pos) {
 bool KanjiIndex::open(const char* basePath) {
   close();
   basePath_ = basePath;
-  buckets_ = SD.open(joinPath(basePath, "buckets.bin"), FILE_READ);
-  records_ = SD.open(joinPath(basePath, "records.bin"), FILE_READ);
-  strings_ = SD.open(joinPath(basePath, "strings.bin"), FILE_READ);
-  if (!buckets_ || !records_ || !strings_) {
+  records_ = SD.open(joinPath(basePath, "lookup.records.bin"), FILE_READ);
+  strings_ = SD.open(joinPath(basePath, "lookup.strings.bin"), FILE_READ);
+  if (!records_ || !strings_) {
     close();
     return false;
   }
+  recordCount_ = records_.size() / kRecordBytes;
   return true;
 }
 
 void KanjiIndex::close() {
-  if (buckets_) {
-    buckets_.close();
-  }
   if (records_) {
     records_.close();
   }
   if (strings_) {
     strings_.close();
   }
+  recordCount_ = 0;
   basePath_ = "";
 }
 
 bool KanjiIndex::isOpen() const {
-  return buckets_ && records_ && strings_;
+  return records_ && strings_;
 }
 
 const String& KanjiIndex::path() const {
   return basePath_;
 }
 
-bool KanjiIndex::readBucket(uint32_t codepoint, uint32_t& start,
-                            uint32_t& count) {
-  if (!isOpen() || codepoint >= kUnicodeBuckets) {
-    start = 0;
-    count = 0;
-    return false;
-  }
-  uint8_t data[kBucketBytes] = {};
-  if (!buckets_.seek(codepoint * kBucketBytes) ||
-      buckets_.read(data, sizeof(data)) != sizeof(data)) {
-    start = 0;
-    count = 0;
-    return false;
-  }
-  start = readLe32(data);
-  count = readLe32(data + 4);
-  return true;
+bool KanjiIndex::hasRadicalIndex() const {
+  return isOpen();
 }
 
 bool KanjiIndex::readRecord(uint32_t index, Record& record) {
   uint8_t data[kRecordBytes] = {};
-  if (!isOpen() || !records_.seek(index * kRecordBytes) ||
+  if (!records_ || !records_.seek(index * kRecordBytes) ||
       records_.read(data, sizeof(data)) != sizeof(data)) {
     return false;
   }
@@ -133,7 +93,7 @@ bool KanjiIndex::readRecord(uint32_t index, Record& record) {
 }
 
 String KanjiIndex::readString(uint32_t offset, uint32_t length) {
-  if (!isOpen() || length == 0 || !strings_.seek(offset)) {
+  if (!strings_ || length == 0 || !strings_.seek(offset)) {
     return "";
   }
   String out;
@@ -157,26 +117,53 @@ String KanjiIndex::readString(uint32_t offset, uint32_t length) {
 
 size_t KanjiIndex::lookup(const String& reading, String* outCandidates,
                           size_t maxCandidates) {
-  if (!isOpen() || reading.length() == 0 || outCandidates == nullptr ||
+  return lookupTyped("r:", reading, outCandidates, maxCandidates);
+}
+
+size_t KanjiIndex::lookupRadicalAliases(const String& alias,
+                                        String* outComponents,
+                                        size_t maxComponents) {
+  return lookupTyped("a:", alias, outComponents, maxComponents);
+}
+
+size_t KanjiIndex::lookupRadicalsByStroke(const String& strokes,
+                                          String* outComponents,
+                                          size_t maxComponents) {
+  return lookupTyped("s:", strokes, outComponents, maxComponents);
+}
+
+size_t KanjiIndex::lookupKanjiByStroke(const String& strokes,
+                                       String* outCandidates,
+                                       size_t maxCandidates) {
+  return lookupTyped("k:", strokes, outCandidates, maxCandidates);
+}
+
+size_t KanjiIndex::lookupComponentKanji(const String& component,
+                                        String* outCandidates,
+                                        size_t maxCandidates) {
+  return lookupTyped("c:", component, outCandidates, maxCandidates);
+}
+
+size_t KanjiIndex::lookupTyped(const char* typePrefix, const String& key,
+                               String* outCandidates, size_t maxCandidates) {
+  if (!isOpen() || typePrefix == nullptr || key.length() == 0 ||
+      outCandidates == nullptr || recordCount_ == 0 ||
       maxCandidates == 0) {
     return 0;
   }
 
-  uint32_t start = 0;
-  uint32_t count = 0;
-  if (!readBucket(firstUtf8Codepoint(reading), start, count) || count == 0) {
-    return 0;
-  }
+  String typedKey = typePrefix;
+  typedKey += key;
 
-  uint32_t lo = start;
-  uint32_t hi = start + count;
+  uint32_t lo = 0;
+  uint32_t hi = recordCount_;
   Record record;
   while (lo < hi) {
     const uint32_t mid = lo + (hi - lo) / 2;
     if (!readRecord(mid, record)) {
       return 0;
     }
-    const int cmp = strcmp(record.key, reading.c_str());
+    const int cmp = strcmp(record.key, typedKey.c_str());
     if (cmp < 0) {
       lo = mid + 1;
     } else {
@@ -184,7 +171,8 @@ size_t KanjiIndex::lookup(const String& reading, String* outCandidates,
     }
   }
 
-  if (!readRecord(lo, record) || strcmp(record.key, reading.c_str()) != 0) {
+  if (lo >= recordCount_ || !readRecord(lo, record) ||
+      strcmp(record.key, typedKey.c_str()) != 0) {
     return 0;
   }
 
