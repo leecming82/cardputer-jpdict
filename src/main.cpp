@@ -83,6 +83,7 @@ bool searched = false;
 bool dirty = true;
 bool marqueeActive = false;
 bool helpVisible = false;
+bool headwordPopupVisible = false;
 bool segmentedSearch = false;
 uint32_t lastMarqueeFrame = 0;
 uint32_t lastInputAt = 0;
@@ -139,6 +140,7 @@ constexpr int kCompactContentTop = 26;
 constexpr int kLargeContentTop = 43;
 constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
+constexpr int kPopupHeadwordLineHeight = 29;
 
 String currentInputText();
 void clearSearchResults();
@@ -1267,6 +1269,74 @@ int countWrappedLines(int width, const String &text, bool largeText = false) {
   return wrappedLine;
 }
 
+int drawWrappedPopupHeadwords(int x, int y, int width, int maxHeight,
+                              const String& text, uint16_t color,
+                              uint16_t background) {
+  auto& display = M5Cardputer.Display;
+  display.setFont(&fonts::efontJA_24);
+  display.setTextDatum(top_left);
+  display.setTextColor(color, background);
+
+  int lineY = y;
+  int pos = 0;
+  while (pos < static_cast<int>(text.length()) &&
+         lineY + kPopupHeadwordLineHeight <= y + maxHeight) {
+    while (pos < static_cast<int>(text.length()) && text[pos] == ' ') {
+      ++pos;
+    }
+
+    String line;
+    String word;
+    while (pos < static_cast<int>(text.length())) {
+      const int charStart = pos;
+      pos = nextUtf8CharEnd(text, pos);
+      const String ch = text.substring(charStart, pos);
+      if (ch == " ") {
+        if (word.length() > 0) {
+          const String candidate = line.length() > 0 ? line + " " + word : word;
+          if (textWidth(candidate) > width && line.length() > 0) {
+            --pos;
+            break;
+          }
+          line = candidate;
+          word = "";
+        }
+        continue;
+      }
+      word += ch;
+
+      if (textWidth(word) > width && line.length() == 0) {
+        while (word.length() > 0 && textWidth(word) > width) {
+          removeLastUtf8Char(word);
+          pos = previousUtf8CharStart(text, pos);
+        }
+        line = word;
+        word = "";
+        break;
+      }
+    }
+
+    if (word.length() > 0) {
+      const String candidate = line.length() > 0 ? line + " " + word : word;
+      if (textWidth(candidate) <= width || line.length() == 0) {
+        line = candidate;
+      } else {
+        pos -= word.length();
+      }
+    }
+
+    if (line.length() == 0) {
+      break;
+    }
+
+    display.fillRect(x, lineY, width, kPopupHeadwordLineHeight, background);
+    display.drawString(line, x, lineY);
+    lineY += kPopupHeadwordLineHeight;
+  }
+
+  return lineY;
+}
+
 String cleanDefinitionForDisplay(String text) {
   text.replace("forms; ", "");
   text.replace("; forms; ", "; ");
@@ -1582,6 +1652,7 @@ void runSearch() {
   lastSearchedKana = committedKana;
   selectedResult = 0;
   definitionScrollLine = 0;
+  headwordPopupVisible = false;
   viewMode = ViewMode::Results;
   searched = true;
   segmentedSearch = false;
@@ -2164,6 +2235,11 @@ bool isBackKey(char ch) {
 
 void handleEscCommand() {
   if (viewMode == ViewMode::Definition) {
+    if (headwordPopupVisible) {
+      headwordPopupVisible = false;
+      dirty = true;
+      return;
+    }
     leaveDefinition();
     return;
   }
@@ -2366,6 +2442,32 @@ void drawDefinition() {
   drawWrappedText(pad, bodyY, display.width() - pad * 2,
                   bottom - bodyY - 2, definition.numberedGlosses, TFT_WHITE,
                   TFT_BLACK, definitionScrollLine, true);
+}
+
+void drawHeadwordPopup() {
+  if (!headwordPopupVisible || viewMode != ViewMode::Definition || !searched ||
+      resultCount == 0 || selectedResult >= resultCount) {
+    return;
+  }
+
+  auto& display = M5Cardputer.Display;
+  constexpr int pad = 8;
+  const int panelX = 5;
+  const int panelY = contentTop() + 4;
+  const int panelW = display.width() - panelX * 2;
+  const int panelH = display.height() - panelY - 5;
+  const int textX = panelX + pad;
+  const int textY = panelY + 10;
+  const int textW = panelW - pad * 2;
+
+  display.fillRect(panelX - 3, panelY - 3, panelW + 6, panelH + 6, TFT_BLACK);
+  display.fillRect(panelX, panelY, panelW, panelH, TFT_DARKGREY);
+  display.drawRect(panelX, panelY, panelW, panelH, TFT_LIGHTGREY);
+
+  const int textH = panelY + panelH - textY - 8;
+  drawWrappedPopupHeadwords(textX, textY, textW, textH,
+                            results[selectedResult].terms, TFT_GREEN,
+                            TFT_DARKGREY);
 }
 
 void drawKanjiSearchGridItem(size_t index, const String& text, int x, int y,
@@ -2702,8 +2804,8 @@ size_t helpLines(String* lines, size_t maxLines) {
     addLine("Esc: Cancel");
   } else if (viewMode == ViewMode::Definition) {
     addLine("Up/Down: Scroll");
+    addLine("Enter: Headwords");
     addLine("Esc: Back");
-    addLine("Ctrl: Hide Help");
   } else if (searched && resultCount > 0) {
     addLine("Up/Down: Nav");
     addLine("Enter: Open");
@@ -2757,6 +2859,7 @@ void drawApp() {
   drawHeader();
   if (viewMode == ViewMode::Definition) {
     drawDefinition();
+    drawHeadwordPopup();
   } else if (viewMode == ViewMode::KanjiSearch) {
     drawKanjiSearch();
   } else if (viewMode == ViewMode::KanjiSpanPicker) {
@@ -2766,7 +2869,9 @@ void drawApp() {
   } else {
     drawResults();
   }
-  drawHelpOverlay();
+  if (!headwordPopupVisible) {
+    drawHelpOverlay();
+  }
   dirty = false;
 }
 
@@ -2777,6 +2882,7 @@ void openDefinition() {
   }
   viewMode = ViewMode::Definition;
   definitionScrollLine = 0;
+  headwordPopupVisible = false;
   dirty = true;
 }
 
@@ -2784,6 +2890,7 @@ void leaveDefinition() {
   if (viewMode != ViewMode::Definition) {
     return;
   }
+  headwordPopupVisible = false;
   viewMode = ViewMode::Results;
   dirty = true;
 }
@@ -2860,6 +2967,11 @@ void handleKeyboard() {
     dirty = true;
     return;
   }
+  if (headwordPopupVisible) {
+    headwordPopupVisible = false;
+    dirty = true;
+    return;
+  }
 
   if (keys.del) {
     if (viewMode == ViewMode::KanjiSearch) {
@@ -2872,6 +2984,13 @@ void handleKeyboard() {
     return;
   }
   if (keys.enter) {
+    if (viewMode == ViewMode::Definition) {
+      headwordPopupVisible = true;
+      marqueeActive = false;
+      helpVisible = false;
+      dirty = true;
+      return;
+    }
     if (viewMode == ViewMode::KanjiSpanPicker) {
       confirmKanjiSpan();
       return;
@@ -3007,7 +3126,8 @@ void loop() {
     drawApp();
   }
 
-  if (!helpVisible && marqueeActive && shouldAnimateMarquee(now) &&
+  if (!helpVisible && !headwordPopupVisible && marqueeActive &&
+      shouldAnimateMarquee(now) &&
       now - lastMarqueeFrame >= kMarqueeFrameMs) {
     lastMarqueeFrame = now;
     drawMarqueeFrame();
