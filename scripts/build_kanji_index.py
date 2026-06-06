@@ -5,7 +5,7 @@ import json
 import os
 import struct
 import xml.etree.ElementTree as ET
-from collections import defaultdict
+from collections import Counter, defaultdict
 from check_efont_coverage import U8g2Font, extract_font_array
 from text_normalization import dedupe_chars, normalize_display_text
 
@@ -97,6 +97,7 @@ RADICAL_ALIASES = {
     "弓": ["ゆみ"],
     "彡": ["さんづくり"],
     "彳": ["ぎょうにんべん"],
+    "彑": ["けいがしら"],
     "心": ["こころ", "しん", "りっしんべん"],
     "忄": ["りっしんべん", "こころ"],
     "戈": ["ほこ"],
@@ -162,6 +163,7 @@ RADICAL_ALIASES = {
     "羊": ["ひつじ"],
     "羽": ["はね"],
     "老": ["おい"],
+    "耂": ["おいかんむり", "おい"],
     "而": ["しかして"],
     "耒": ["らいすき"],
     "耳": ["みみ"],
@@ -304,6 +306,34 @@ RADICAL_VARIANTS = {
     "飠": "食",
 }
 
+KRAD_COMPONENT_ALIASES = {
+    "｜": "丨",
+    "ノ": "丿",
+    "ハ": "八",
+    "ヨ": "彑",
+    "化": "亻",
+    "个": "人",
+    "并": "八",
+    "刈": "刂",
+    "込": "辶",
+    "尚": "小",
+    "艾": "艹",
+    "邦": "阝",
+    "阡": "阝",
+    "老": "耂",
+    "杰": "灬",
+    "礼": "礻",
+    "忙": "忄",
+    "疔": "疒",
+    "扎": "扌",
+    "汁": "氵",
+    "犯": "犭",
+    "禹": "禸",
+    "初": "衤",
+    "買": "罒",
+    "滴": "啇",
+}
+
 
 def katakana_to_hiragana(text):
     out = []
@@ -438,6 +468,10 @@ def parse_kradfile(path):
             if component:
                 components[kanji].add(component)
     return components
+
+
+def normalize_krad_component(component):
+    return normalize_display_text(KRAD_COMPONENT_ALIASES.get(component, component))
 
 
 def build_buckets(entries):
@@ -659,7 +693,7 @@ def build_radical_entries(kanjidic2, kradfile, max_components_per_alias,
     for kanji, components in krad_components.items():
         rank = metadata.get(kanji, {}).get("rank", (99, 99999, 999, kanji))
         for component in components:
-            normalized = normalize_display_text(component)
+            normalized = normalize_krad_component(component)
             for ch in normalized:
                 if font is not None and not font.has_glyph(ord(ch)):
                     continue
@@ -920,6 +954,58 @@ def lookup_kanji_strokes(args):
     lookup_prefixed(args.dir, "kanji_strokes", args.strokes)
 
 
+def audit_krad(args):
+    krad_components = parse_kradfile(args.kradfile)
+    raw_counts = Counter()
+    normalized_counts = Counter()
+    examples = defaultdict(list)
+    metadata, _ = parse_kanjidic2_metadata(args.kanjidic2)
+    for kanji, components in krad_components.items():
+        for raw in components:
+            normalized = normalize_krad_component(raw)
+            raw_counts[raw] += 1
+            normalized_counts[normalized] += 1
+            if len(examples[raw]) < args.examples:
+                examples[raw].append(kanji)
+
+    mapped_count = sum(1 for raw in raw_counts if raw in KRAD_COMPONENT_ALIASES)
+    missing_alias = []
+    missing_stroke = []
+    multi_char = []
+    for raw, count in raw_counts.items():
+        normalized = normalize_krad_component(raw)
+        chars = list(normalized)
+        if len(chars) != 1:
+            multi_char.append((raw, count, normalized))
+        if not any(ch in RADICAL_ALIASES for ch in chars):
+            missing_alias.append((raw, count, normalized))
+        if not all(
+            ch in RADICAL_STROKES or ch in metadata
+            for ch in chars
+        ):
+            missing_stroke.append((raw, count, normalized))
+
+    print(f"kanji={len(krad_components)}")
+    print(f"raw_components={len(raw_counts)}")
+    print(f"normalized_components={len(normalized_counts)}")
+    print(f"mapped_placeholders={mapped_count}")
+    print(f"missing_alias={len(missing_alias)}")
+    print(f"missing_stroke_or_metadata={len(missing_stroke)}")
+    print("")
+    print("raw\tcount\tnormalized\tmapped\talias\tstroke_or_metadata\texamples")
+
+    for raw, count in raw_counts.most_common(args.top):
+        normalized = normalize_krad_component(raw)
+        chars = list(normalized)
+        has_alias = any(ch in RADICAL_ALIASES for ch in chars)
+        has_stroke = all(ch in RADICAL_STROKES or ch in metadata for ch in chars)
+        mapped = KRAD_COMPONENT_ALIASES.get(raw, "")
+        print(
+            f"{raw}\t{count}\t{normalized}\t{mapped}\t"
+            f"{int(has_alias)}\t{int(has_stroke)}\t{''.join(examples[raw])}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -949,8 +1035,8 @@ def main():
     p.add_argument("out_dir")
     p.add_argument("--max-components-per-alias", type=int, default=24)
     p.add_argument("--max-components-per-stroke", type=int, default=48)
-    p.add_argument("--max-candidates-per-component", type=int, default=160)
-    p.add_argument("--max-kanji-per-stroke", type=int, default=160)
+    p.add_argument("--max-candidates-per-component", type=int, default=9999)
+    p.add_argument("--max-kanji-per-stroke", type=int, default=9999)
     p.add_argument("--font-source", default=DEFAULT_FONT_SOURCE)
     p.add_argument("--font-symbol", default=DEFAULT_FONT_SYMBOL)
     p.add_argument(
@@ -968,8 +1054,8 @@ def main():
     p.add_argument("--max-candidates-per-reading", type=int, default=96)
     p.add_argument("--max-components-per-alias", type=int, default=24)
     p.add_argument("--max-components-per-stroke", type=int, default=48)
-    p.add_argument("--max-candidates-per-component", type=int, default=160)
-    p.add_argument("--max-kanji-per-stroke", type=int, default=160)
+    p.add_argument("--max-candidates-per-component", type=int, default=9999)
+    p.add_argument("--max-kanji-per-stroke", type=int, default=9999)
     p.add_argument("--font-source", default=DEFAULT_FONT_SOURCE)
     p.add_argument("--font-symbol", default=DEFAULT_FONT_SYMBOL)
     p.add_argument(
@@ -999,6 +1085,13 @@ def main():
     p.add_argument("dir")
     p.add_argument("strokes")
     p.set_defaults(func=lookup_kanji_strokes)
+
+    p = sub.add_parser("audit-krad")
+    p.add_argument("kanjidic2")
+    p.add_argument("kradfile")
+    p.add_argument("--top", type=int, default=80)
+    p.add_argument("--examples", type=int, default=12)
+    p.set_defaults(func=audit_krad)
 
     args = parser.parse_args()
     args.func(args)

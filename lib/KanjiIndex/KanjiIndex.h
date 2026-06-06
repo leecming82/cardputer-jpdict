@@ -20,6 +20,12 @@ class KanjiIndex {
                              size_t maxCandidates);
   size_t lookupComponentKanji(const String& component, String* outCandidates,
                               size_t maxCandidates);
+  bool containsKanjiWithStroke(const String& strokes, const String& kanji);
+  bool containsComponentKanji(const String& component, const String& kanji);
+  size_t lookupComponentKanjiByStroke(const String& component,
+                                      const String& strokes,
+                                      String* outCandidates,
+                                      size_t maxCandidates);
 
  private:
   static constexpr size_t kKeyBytes = 64;
@@ -40,6 +46,9 @@ class KanjiIndex {
 
   bool readRecord(uint32_t index, Record& record);
   String readString(uint32_t offset, uint32_t length);
+  bool findRecord(const char* typePrefix, const String& key, Record& record);
+  bool containsTypedCandidate(const char* typePrefix, const String& key,
+                              const String& candidate);
   size_t lookupTyped(const char* typePrefix, const String& key,
                      String* outCandidates, size_t maxCandidates);
 };

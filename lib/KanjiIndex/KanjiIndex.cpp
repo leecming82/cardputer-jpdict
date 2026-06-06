@@ -36,6 +36,20 @@ String utf8CharAt(const String& text, int pos) {
   return text.substring(pos, end);
 }
 
+bool packedContainsUtf8Candidate(const String& packed, const String& candidate) {
+  for (int pos = 0; pos < static_cast<int>(packed.length());) {
+    const String ch = utf8CharAt(packed, pos);
+    if (ch.length() == 0) {
+      break;
+    }
+    if (ch == candidate) {
+      return true;
+    }
+    pos += ch.length();
+  }
+  return false;
+}
+
 }  // namespace
 
 bool KanjiIndex::open(const char* basePath) {
@@ -144,24 +158,65 @@ size_t KanjiIndex::lookupComponentKanji(const String& component,
   return lookupTyped("c:", component, outCandidates, maxCandidates);
 }
 
-size_t KanjiIndex::lookupTyped(const char* typePrefix, const String& key,
-                               String* outCandidates, size_t maxCandidates) {
-  if (!isOpen() || typePrefix == nullptr || key.length() == 0 ||
-      outCandidates == nullptr || recordCount_ == 0 ||
-      maxCandidates == 0) {
+bool KanjiIndex::containsKanjiWithStroke(const String& strokes,
+                                         const String& kanji) {
+  return containsTypedCandidate("k:", strokes, kanji);
+}
+
+bool KanjiIndex::containsComponentKanji(const String& component,
+                                        const String& kanji) {
+  return containsTypedCandidate("c:", component, kanji);
+}
+
+size_t KanjiIndex::lookupComponentKanjiByStroke(const String& component,
+                                                const String& strokes,
+                                                String* outCandidates,
+                                                size_t maxCandidates) {
+  if (!isOpen() || component.length() == 0 || strokes.length() == 0 ||
+      outCandidates == nullptr || maxCandidates == 0) {
     return 0;
   }
 
+  Record record;
+  Record strokeRecord;
+  if (!findRecord("c:", component, record) ||
+      !findRecord("k:", strokes, strokeRecord)) {
+    return 0;
+  }
+
+  const String packed = readString(record.candidatesOffset, record.candidatesLen);
+  const String strokePacked =
+      readString(strokeRecord.candidatesOffset, strokeRecord.candidatesLen);
+  size_t found = 0;
+  for (int pos = 0; pos < static_cast<int>(packed.length()) &&
+                    found < maxCandidates;) {
+    const String ch = utf8CharAt(packed, pos);
+    if (ch.length() == 0) {
+      break;
+    }
+    if (packedContainsUtf8Candidate(strokePacked, ch)) {
+      outCandidates[found++] = ch;
+    }
+    pos += ch.length();
+  }
+  return found;
+}
+
+bool KanjiIndex::findRecord(const char* typePrefix, const String& key,
+                            Record& record) {
+  if (!isOpen() || typePrefix == nullptr || key.length() == 0 ||
+      recordCount_ == 0) {
+    return false;
+  }
   String typedKey = typePrefix;
   typedKey += key;
 
   uint32_t lo = 0;
   uint32_t hi = recordCount_;
-  Record record;
   while (lo < hi) {
     const uint32_t mid = lo + (hi - lo) / 2;
     if (!readRecord(mid, record)) {
-      return 0;
+      return false;
     }
     const int cmp = strcmp(record.key, typedKey.c_str());
     if (cmp < 0) {
@@ -173,9 +228,35 @@ size_t KanjiIndex::lookupTyped(const char* typePrefix, const String& key,
 
   if (lo >= recordCount_ || !readRecord(lo, record) ||
       strcmp(record.key, typedKey.c_str()) != 0) {
+    return false;
+  }
+  return true;
+}
+
+bool KanjiIndex::containsTypedCandidate(const char* typePrefix,
+                                        const String& key,
+                                        const String& candidate) {
+  if (candidate.length() == 0) {
+    return false;
+  }
+  Record record;
+  if (!findRecord(typePrefix, key, record)) {
+    return false;
+  }
+  const String packed = readString(record.candidatesOffset, record.candidatesLen);
+  return packedContainsUtf8Candidate(packed, candidate);
+}
+
+size_t KanjiIndex::lookupTyped(const char* typePrefix, const String& key,
+                               String* outCandidates, size_t maxCandidates) {
+  if (outCandidates == nullptr || maxCandidates == 0) {
     return 0;
   }
 
+  Record record;
+  if (!findRecord(typePrefix, key, record)) {
+    return 0;
+  }
   const String packed = readString(record.candidatesOffset, record.candidatesLen);
   size_t found = 0;
   for (int pos = 0; pos < static_cast<int>(packed.length()) &&

@@ -25,7 +25,7 @@ constexpr const char* kDictionaryPaths[] = {
 constexpr size_t kMaxResults = 12;
 constexpr size_t kMaxNormalResults = 6;
 constexpr size_t kSearchHistorySize = 8;
-constexpr size_t kMaxKanjiCandidates = 64;
+constexpr size_t kMaxKanjiCandidates = 160;
 constexpr size_t kMaxRadicalComponents = 24;
 constexpr size_t kMaxSelectedRadicals = 6;
 constexpr size_t kVisibleKanjiCandidates = 24;
@@ -1834,6 +1834,16 @@ void filterKanjiCandidatesByList(String* allowed, size_t allowedCount) {
   kanjiCandidateCount = kept;
 }
 
+void filterKanjiCandidatesByComponent(const String& component) {
+  size_t kept = 0;
+  for (size_t i = 0; i < kanjiCandidateCount; ++i) {
+    if (kanjiIndex.containsComponentKanji(component, kanjiCandidates[i])) {
+      kanjiCandidates[kept++] = kanjiCandidates[i];
+    }
+  }
+  kanjiCandidateCount = kept;
+}
+
 void refreshSelectedRadicalKanjiCandidates() {
   kanjiCandidateCount = 0;
   if (!kanjiIndex.hasRadicalIndex() || selectedRadicalCount == 0) {
@@ -1900,11 +1910,17 @@ void refreshKanjiSearchCandidates() {
   refreshSelectedRadicalKanjiCandidates();
   if (kanjiSearchIsStrokeCount() && key.length() > 0 &&
       kanjiIndex.hasRadicalIndex()) {
-    const size_t strokeKanjiCount = kanjiIndex.lookupKanjiByStroke(
-        key, kanjiCandidateScratch, kMaxKanjiCandidates);
     if (selectedRadicalCount > 0) {
-      filterKanjiCandidatesByList(kanjiCandidateScratch, strokeKanjiCount);
+      kanjiCandidateCount = kanjiIndex.lookupComponentKanjiByStroke(
+          selectedRadicalComponents[0], key, kanjiCandidates,
+          kMaxKanjiCandidates);
+      for (size_t i = 1; i < selectedRadicalCount && kanjiCandidateCount > 0;
+           ++i) {
+        filterKanjiCandidatesByComponent(selectedRadicalComponents[i]);
+      }
     } else {
+      const size_t strokeKanjiCount = kanjiIndex.lookupKanjiByStroke(
+          key, kanjiCandidateScratch, kMaxKanjiCandidates);
       kanjiCandidateCount = strokeKanjiCount;
       for (size_t i = 0; i < kanjiCandidateCount; ++i) {
         kanjiCandidates[i] = kanjiCandidateScratch[i];
