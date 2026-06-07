@@ -5,6 +5,7 @@
 #include "JapaneseDictionary.h"
 #include "KanjiIndex.h"
 #include "M5Cardputer.h"
+#include "PopupHeadwordFont.h"
 #include "RomajiKana.h"
 
 namespace {
@@ -140,7 +141,7 @@ constexpr int kCompactContentTop = 26;
 constexpr int kLargeContentTop = 43;
 constexpr int kSmallBodyLineHeight = 15;
 constexpr int kLargeBodyLineHeight = 20;
-constexpr int kPopupHeadwordLineHeight = 29;
+constexpr int kPopupHeadwordLineHeight = popup_headword_font::kLineHeight + 2;
 
 String currentInputText();
 void clearSearchResults();
@@ -1273,7 +1274,7 @@ int drawWrappedPopupHeadwords(int x, int y, int width, int maxHeight,
                               const String& text, uint16_t color,
                               uint16_t background) {
   auto& display = M5Cardputer.Display;
-  display.setFont(&fonts::efontJA_24);
+  display.setFont(popup_headword_font::font());
   display.setTextDatum(top_left);
   display.setTextColor(color, background);
 
