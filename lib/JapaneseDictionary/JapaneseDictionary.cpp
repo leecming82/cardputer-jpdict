@@ -366,6 +366,65 @@ size_t JapaneseDictionary::appendExactMatches(
   return found;
 }
 
+bool JapaneseDictionary::beginExactLookup(
+    const String& key, JapaneseDictionaryExactCursor& cursor) {
+  cursor = JapaneseDictionaryExactCursor{};
+  if (!isOpen() || key.length() == 0 || !keyMightExist(key)) {
+    return false;
+  }
+
+  uint32_t start = 0;
+  uint32_t count = 0;
+  uint32_t lo = 0;
+  if (!lowerBoundInBucket(key, start, count, lo)) {
+    return false;
+  }
+
+  cursor.key = key;
+  cursor.pos = lo;
+  cursor.end = start + count;
+  cursor.active = true;
+  cursor.exhausted = lo >= cursor.end;
+  return true;
+}
+
+size_t JapaneseDictionary::lookupExactNext(
+    JapaneseDictionaryExactCursor& cursor, JapaneseDictionaryMatch* outMatches,
+    size_t maxMatches) {
+  if (!isOpen() || !cursor.active || cursor.exhausted ||
+      cursor.key.length() == 0 || outMatches == nullptr || maxMatches == 0) {
+    return 0;
+  }
+
+  size_t found = 0;
+  for (uint32_t pos = cursor.pos;
+       pos < cursor.end && found < maxMatches; ++pos) {
+    Record record;
+    if (!readRecord(pos, record)) {
+      cursor.pos = pos;
+      cursor.exhausted = true;
+      return found;
+    }
+    if (strcmp(record.key, cursor.key.c_str()) != 0) {
+      cursor.pos = pos;
+      cursor.exhausted = true;
+      return found;
+    }
+
+    JapaneseDictionaryMatch candidate;
+    populateMatch(record, cursor.key, 0, candidate);
+    if (!mergeMatched(outMatches, found, candidate)) {
+      outMatches[found++] = candidate;
+    }
+    cursor.pos = pos + 1;
+  }
+
+  if (cursor.pos >= cursor.end) {
+    cursor.exhausted = true;
+  }
+  return found;
+}
+
 size_t JapaneseDictionary::lookupExact(const String& key,
                                        JapaneseDictionaryMatch* outMatches,
                                        size_t maxMatches) {

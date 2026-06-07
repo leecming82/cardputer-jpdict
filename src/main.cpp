@@ -23,7 +23,7 @@ constexpr const char* kDictionaryPaths[] = {
     "/dict/jitendex-cpdict-modern",
 };
 
-constexpr size_t kMaxResults = 12;
+constexpr size_t kMaxResults = 32;
 constexpr size_t kMaxNormalResults = 6;
 constexpr size_t kSearchHistorySize = 8;
 constexpr size_t kMaxKanjiCandidates = 160;
@@ -58,6 +58,7 @@ size_t resultCount = 0;
 JapaneseDictionary dictionary;
 JapaneseDictionaryMatch results[kMaxResults];
 String resultPreviewLines[kMaxResults];
+JapaneseDictionaryExactCursor exactCursor;
 String searchHistory[kSearchHistorySize];
 size_t searchHistoryCount = 0;
 int searchHistoryIndex = -1;
@@ -148,6 +149,7 @@ void clearSearchResults();
 void removeLastUtf8Char(String& text);
 int previousUtf8CharStart(const String& text, int pos);
 int nextUtf8CharEnd(const String& text, int pos);
+void rebuildResultPreviewLines();
 void drawResults();
 void leaveDefinition();
 
@@ -729,6 +731,7 @@ void clearSearchResults() {
   segmentedSearch = false;
   resultCount = 0;
   selectedResult = 0;
+  exactCursor = JapaneseDictionaryExactCursor{};
   definitionScrollLine = 0;
   viewMode = ViewMode::Results;
 }
@@ -953,6 +956,43 @@ size_t stagedSearchLimit(size_t found) {
   }
   const size_t limit = remaining + kMergeSlack;
   return limit < kMaxResults ? limit : kMaxResults;
+}
+
+bool appendNextExactResultPage() {
+  if (!dictionary.isOpen() || !exactCursor.active || exactCursor.exhausted ||
+      resultCount >= kMaxResults) {
+    return false;
+  }
+
+  const size_t oldCount = resultCount;
+  JapaneseDictionaryMatch staged[kMaxResults];
+
+  // Exact-result paging is intentionally scoped to the primary exact key.
+  // Prefix, fallback, and deinflected stages need their own cursors if they
+  // ever need continuation.
+  while (!exactCursor.exhausted && resultCount < kMaxResults) {
+    const size_t remaining = kMaxResults - resultCount;
+    const size_t pageLimit =
+        remaining < kMaxNormalResults ? remaining : kMaxNormalResults;
+    const size_t stagedCount =
+        dictionary.lookupExactNext(exactCursor, staged, pageLimit);
+    if (stagedCount == 0) {
+      break;
+    }
+    resultCount = appendSearchResults(results, resultCount, kMaxResults,
+                                      staged, stagedCount);
+    if (resultCount > oldCount) {
+      rebuildResultPreviewLines();
+      Serial.printf("search exact page kana='%s' results=%u exhausted=%u\n",
+                    exactCursor.key.c_str(),
+                    static_cast<unsigned>(resultCount),
+                    exactCursor.exhausted ? 1 : 0);
+      dirty = true;
+      return true;
+    }
+  }
+
+  return resultCount > oldCount;
 }
 
 bool isKanaCodepoint(uint32_t cp) {
@@ -1657,6 +1697,7 @@ void runSearch() {
   viewMode = ViewMode::Results;
   searched = true;
   segmentedSearch = false;
+  exactCursor = JapaneseDictionaryExactCursor{};
 
   if (committedKana.length() == 0 || !dictionary.isOpen()) {
     resultCount = 0;
@@ -1668,8 +1709,11 @@ void runSearch() {
     const bool allowKatakanaFallback = !likelyInflected;
 
     resultCount = 0;
-    size_t stagedCount =
-        dictionary.lookupExact(lastSearchedKana, staged, kMaxNormalResults);
+    size_t stagedCount = 0;
+    if (dictionary.beginExactLookup(lastSearchedKana, exactCursor)) {
+      stagedCount =
+          dictionary.lookupExactNext(exactCursor, staged, kMaxNormalResults);
+    }
     resultCount = appendSearchResults(results, resultCount, kMaxResults,
                                       staged, stagedCount);
     if (allowKatakanaFallback && resultCount < kMaxNormalResults &&
@@ -1851,11 +1895,17 @@ void selectNextResult() {
     return;
   }
 
-  if (resultCount == 0 || selectedResult + 1 >= resultCount) {
+  if (resultCount == 0) {
     return;
   }
   const size_t oldSelected = selectedResult;
   const size_t oldFirstRow = firstVisibleResultFor(oldSelected);
+  if (selectedResult + 1 >= resultCount && !appendNextExactResultPage()) {
+    return;
+  }
+  if (selectedResult + 1 >= resultCount) {
+    return;
+  }
   ++selectedResult;
   definitionScrollLine = 0;
   if (!dirty && oldFirstRow == firstVisibleResultFor(selectedResult)) {

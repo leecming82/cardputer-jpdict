@@ -18,6 +18,14 @@ struct JapaneseDictionaryMatch {
   uint8_t termCount = 0;
 };
 
+struct JapaneseDictionaryExactCursor {
+  String key;
+  uint32_t pos = 0;
+  uint32_t end = 0;
+  bool active = false;
+  bool exhausted = true;
+};
+
 class JapaneseDictionary {
  public:
   bool open(const char* basePath);
@@ -25,6 +33,11 @@ class JapaneseDictionary {
   bool isOpen() const;
   const String& path() const;
   bool hasExact(const String& key);
+  bool beginExactLookup(const String& key,
+                        JapaneseDictionaryExactCursor& cursor);
+  size_t lookupExactNext(JapaneseDictionaryExactCursor& cursor,
+                         JapaneseDictionaryMatch* outMatches,
+                         size_t maxMatches);
   size_t lookupExact(const String& key, JapaneseDictionaryMatch* outMatches,
                      size_t maxMatches);
   size_t lookupExactThenPrefix(const String& key,
